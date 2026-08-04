@@ -1,0 +1,72 @@
+[
+  {
+    "id": "persona-a0387033",
+    "name": "老孙",
+    "profession": "后端开发",
+    "style": "温和佛系",
+    "fingerprint": "a0387033"
+  },
+  {
+    "id": "persona-d1f75028",
+    "name": "老徐",
+    "profession": "网络工程师",
+    "style": "老干部",
+    "fingerprint": "d1f75028"
+  },
+  {
+    "id": "persona-de79fd7a",
+    "name": "老谢",
+    "profession": "DBA",
+    "style": "丧系话痨",
+    "fingerprint": "de79fd7a"
+  },
+  {
+    "id": "persona-649caa39",
+    "name": "老何",
+    "profession": "安全工程师",
+    "style": "热血奋斗",
+    "fingerprint": "649caa39"
+  },
+  {
+    "id": "persona-ed76c488",
+    "name": "老徐",
+    "profession": "网络工程师",
+    "style": "丧系话痨",
+    "fingerprint": "ed76c488"
+  },
+  {
+    "id": "persona-07edc154",
+    "name": "老马",
+    "profession": "后端开发",
+    "style": "温和佛系",
+    "fingerprint": "07edc154"
+  },
+  {
+    "id": "persona-897e5534",
+    "name": "老何",
+    "profession": "DBA",
+    "style": "热血奋斗",
+    "fingerprint": "897e5534"
+  },
+  {
+    "id": "persona-e7ce3c42",
+    "name": "老郭",
+    "profession": "后端开发",
+    "style": "冷幽默",
+    "fingerprint": "e7ce3c42"
+  },
+  {
+    "id": "persona-f75c586e",
+    "name": "老朱",
+    "profession": "安全工程师",
+    "style": "冷幽默",
+    "fingerprint": "f75c586e"
+  },
+  {
+    "id": "persona-576e58b3",
+    "name": "老高",
+    "profession": "全栈开发",
+    "style": "话痨碎嘴",
+    "fingerprint": "576e58b3"
+  }
+]
