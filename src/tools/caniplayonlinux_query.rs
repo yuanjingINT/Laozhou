@@ -70,7 +70,7 @@ async fn query_caniplayonlinux(args: Value) -> Result<String> {
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(25))
-        .user_agent("miyu-caniplayonlinux-query/0.1")
+        .user_agent("laozhou-caniplayonlinux-query/0.1")
         .build()?;
 
     let first_html = fetch_text(&client, &format!("{BASE_URL}/games/")).await?;

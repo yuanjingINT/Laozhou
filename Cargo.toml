@@ -1,9 +1,9 @@
 [package]
-name = "miyu"
+name = "laozhou"
 version = "0.3.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/SHORiN-KiWATA/Miyu"
+repository = "https://github.com/SHORiN-KiWATA/Laozhou"
 description = "Command-line AI assistant"
 
 [dependencies]

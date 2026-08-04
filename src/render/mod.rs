@@ -4070,7 +4070,7 @@ mod tests {
         let output = render_table(&[
             "| 项目 | 内容 |".to_string(),
             "|---|---|".to_string(),
-            "| 名字 | 未有 / Miyu |".to_string(),
+            "| 名字 | 老周 / Laozhou |".to_string(),
             "| 年龄 | 18 |".to_string(),
         ]);
         let terminal_width = terminal::size()

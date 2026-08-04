@@ -1,11 +1,11 @@
 use crate::i18n::text as t;
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use anyhow::Result;
 use std::io::Write;
 use std::path::Path;
 
-const BEGIN_MARKER: &str = "# >>> miyu zsh hook >>>";
-const END_MARKER: &str = "# <<< miyu zsh hook <<<";
+const BEGIN_MARKER: &str = "# >>> laozhou zsh hook >>>";
+const END_MARKER: &str = "# <<< laozhou zsh hook <<<";
 
 pub fn hook() -> &'static str {
     r#"command_not_found_handler() {
@@ -15,13 +15,13 @@ pub fn hook() -> &'static str {
     [[ -n "$text" ]] || return 127
     [[ "$text" != *$'\n'* && "$text" != *$'\r'* ]] || return 127
 
-    miyu --shell-intercept --shell zsh -- "$@" 2>/dev/null
+    laozhou --shell-intercept --shell zsh -- "$@" 2>/dev/null
     return 127
 }
 "#
 }
 
-pub fn install(paths: &MiyuPaths) -> Result<()> {
+pub fn install(paths: &LaozhouPaths) -> Result<()> {
     if let Some(parent) = paths.zsh_hook_file.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -38,7 +38,7 @@ pub fn install(paths: &MiyuPaths) -> Result<()> {
     Ok(())
 }
 
-pub fn uninstall(paths: &MiyuPaths) -> Result<bool> {
+pub fn uninstall(paths: &LaozhouPaths) -> Result<bool> {
     let removed_file = remove_file_if_exists(&paths.zsh_hook_file)?;
     let rc_path = home_file(".zshrc");
     let removed_block = remove_source_block(&rc_path, BEGIN_MARKER, END_MARKER)?;
@@ -46,7 +46,7 @@ pub fn uninstall(paths: &MiyuPaths) -> Result<bool> {
     if removed {
         println!(
             "{}: zsh",
-            t("removed Miyu shell hook", "已移除 Miyu shell hook")
+            t("removed Laozhou shell hook", "已移除 Laozhou shell hook")
         );
     }
     Ok(removed)
@@ -127,8 +127,8 @@ mod tests {
     fn zsh_hook_does_not_filter_natural_language_symbols() {
         let hook = hook();
         assert!(!hook.contains("${#text} <= 120"));
-        assert!(!hook.contains("miyu_shell_syntax_pattern"));
-        assert!(!hook.contains("miyu_leading_pattern"));
+        assert!(!hook.contains("laozhou_shell_syntax_pattern"));
+        assert!(!hook.contains("laozhou_leading_pattern"));
     }
 
     #[test]

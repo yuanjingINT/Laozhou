@@ -4,7 +4,7 @@ use directories::{BaseDirs, UserDirs};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
-pub struct MiyuPaths {
+pub struct LaozhouPaths {
     pub config_dir: PathBuf,
     pub config_file: PathBuf,
     pub skills_dir: PathBuf,
@@ -19,29 +19,29 @@ pub struct MiyuPaths {
     pub system_scripts_dir: PathBuf,
 }
 
-impl MiyuPaths {
+impl LaozhouPaths {
     pub fn new() -> Result<Self> {
         let base = BaseDirs::new().context(t(
             "could not determine XDG base directories",
             "无法确定 XDG 基础目录",
         ))?;
-        let config_dir = base.config_dir().join("miyu");
-        let data_dir = base.data_dir().join("miyu");
-        let cache_dir = base.cache_dir().join("miyu");
+        let config_dir = base.config_dir().join("laozhou");
+        let data_dir = base.data_dir().join("laozhou");
+        let cache_dir = base.cache_dir().join("laozhou");
         let state_dir = base
             .state_dir()
             .unwrap_or_else(|| base.data_dir())
-            .join("miyu");
+            .join("laozhou");
         let pictures_dir = std::env::var_os("XDG_PICTURES_DIR")
             .map(PathBuf::from)
             .or_else(|| UserDirs::new().and_then(|dirs| dirs.picture_dir().map(PathBuf::from)))
             .unwrap_or_else(|| base.home_dir().join("Pictures"))
-            .join("miyu");
-        let fish_hook_file = base.config_dir().join("fish/conf.d/miyu.fish");
+            .join("laozhou");
+        let fish_hook_file = base.config_dir().join("fish/conf.d/laozhou.fish");
         let bash_hook_file = config_dir.join("shell/bash-hook.sh");
         let zsh_hook_file = config_dir.join("shell/zsh-hook.zsh");
         let scripts_dir = config_dir.join("scripts");
-        let system_scripts_dir = PathBuf::from("/usr/share/miyu/scripts");
+        let system_scripts_dir = PathBuf::from("/usr/share/laozhou/scripts");
 
         Ok(Self {
             config_file: config_dir.join("config.jsonc"),

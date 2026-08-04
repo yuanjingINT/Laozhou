@@ -32,6 +32,12 @@ Linux 先行逆向双系统安装方案（双 ESP 隔离机制）
 6. 双系统引导管理
 安装完成后，双 ESP 分区将分别承载对应系统的引导程序。开机时通过主板 UEFI 启动项菜单（Boot Menu），即可自由选择启动 Linux 或 Windows，双系统稳定共存。
 
+7. 安装后注意事项
+
+· 禁用 Windows 快速启动（Fast Startup）：进入 Windows 后，在"控制面板 → 电源选项 → 选择电源按钮的功能 → 更改当前不可用的设置"中取消勾选"启用快速启动"。快速启动会使 Windows 关机时进入混合休眠状态并锁定 NTFS 分区，导致 Linux 端无法正常挂载或写入共享数据分区，严重时还会造成分区损坏。
+· 硬件时钟时间标准：Windows 默认将硬件时钟当作本地时间（localtime），Linux 默认当作 UTC，双系统切换后会出现时间相差 8 小时的问题。解决方案二选一：在 Linux 中执行 `timedatectl set-local-rtc 1` 将硬件时钟改为本地时间（不推荐，可能影响日志时间戳）；或在 Windows 中将硬件时钟设为 UTC（推荐，通过注册表设置）。
+· 若主板开启了 Secure Boot，需确保 Linux 端的引导程序（如 GRUB、systemd-boot）已正确配置 Secure Boot 支持（如使用 sbctl 签名），否则可能无法从 UEFI 启动项进入 Linux。
+
 强制合规要求
 
 必做项

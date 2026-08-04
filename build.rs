@@ -6,15 +6,15 @@ use std::path::PathBuf;
 
 use base64::{engine::general_purpose, Engine as _};
 
-const PROMPT_MASK: &[u8] = b"MiyuPromptMask";
+const PROMPT_MASK: &[u8] = b"LaozhouPromptMask";
 
 fn main() {
-    println!("cargo:rerun-if-changed=src/prompts/miyu.md");
+    println!("cargo:rerun-if-changed=src/prompts/laozhou.md");
     println!("cargo:rerun-if-changed=src/prompts/plan.md");
     println!("cargo:rerun-if-changed=src/prompts/chat.md");
     println!("cargo:rerun-if-changed=assets/o200k_base.tiktoken");
 
-    let prompt = fs::read("src/prompts/miyu.md").expect("read src/prompts/miyu.md");
+    let prompt = fs::read("src/prompts/laozhou.md").expect("read src/prompts/laozhou.md");
     let encoded = prompt
         .into_iter()
         .enumerate()
@@ -22,11 +22,11 @@ fn main() {
         .collect::<Vec<_>>();
     let encoded = base64_encode(&encoded);
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR is set by cargo");
-    let dest = Path::new(&out_dir).join("default_miyu_prompt.rs");
+    let dest = Path::new(&out_dir).join("default_laozhou_prompt.rs");
     fs::write(
         dest,
         format!(
-            "const PROMPT_MASK: &[u8] = b\"MiyuPromptMask\";\nconst OBFUSCATED_DEFAULT_SYSTEM_PROMPT: &str = \"{encoded}\";\n"
+            "const PROMPT_MASK: &[u8] = b\"LaozhouPromptMask\";\nconst OBFUSCATED_DEFAULT_SYSTEM_PROMPT: &str = \"{encoded}\";\n"
         ),
     )
     .expect("write generated prompt asset");

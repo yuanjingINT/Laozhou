@@ -1,29 +1,31 @@
 <p align="center">
-  <img src="pics/miyu-logo.png" alt="Miyu" width="180">
+  <img src="pics/laozhou-logo.png" alt="Laozhou" width="180">
 </p>
 
-# Miyu
+# 老周（Laozhou）
 
-一个活在终端里的二次元少女。
+一个活在终端里的 Linux 运维老油条。
 
->暂时
+## 项目背景
 
-## 谁是 Miyu？
+本项目基于开源项目 [Miyu](https://github.com/SHORiN-KiWATA/Miyu) 的框架进行改造。Miyu 是一个活在终端里的二次元少女 AI 助手，由 [SHORiN-KiWATA](https://github.com/SHORiN-KiWATA) 开发，使用 MIT 协议开源。在保留 Miyu 原有架构和核心功能的基础上，本项目对人设提示词、角色定位、交互风格进行了全面改造，将其从一个二次元少女角色转变为一个务实的 Linux 运维工程师角色。
 
-Miyu 是从我曾经很喜欢的动画中的角色[久遠寺未有](http://www.minatosoft.com/kimiaru/chara-miyu.html)身上汲取灵感制作的人物。
+### "老周"是谁？
 
-![](./pics/miyuwallpaper.png)
+"老周"的角色设定来源于本项目创建者 **乌龙** 的同事——一位真实的运维工程师老周。现实中的老周是一位干了近二十年的 Linux 运维老油条，43 岁，江苏人，技术扎实但被社会毒打够了，对生活没指望，每天睡不好，动不动想辞职。他排斥 AI，信自己手搓的东西，问题能用就行，不整花活。
 
-## 有什么功能？
+本项目将这位真实人物的性格特征、技术习惯、说话方式提炼为 AI 人设，在终端里复刻了一个"老周"——你问他技术问题，他嘴上嫌烦但会认真帮你排障；你说"装个 wps"，他直接甩你一条 `yay -S wps-cn`。
 
-`miyu` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。她并非专业的 Coding Agent，而是更偏向聊天日常、游戏娱乐、系统排障等日用场景。并且 `miyu` 还可以无缝与 `fish`、`zsh`、`bash` 集成，终端打字直接无缝对话！
+## 核心功能
+
+`laozhou` 由大模型驱动，默认接入了 [opencode](https://github.com/anomalyco/opencode) 的公共模型服务，你也可以配置自己的大模型服务。他的核心定位是 Linux 桌面助手，偏向系统排障、指令转化、运维管理、日常聊天等场景，而非专业的 Coding Agent。并且 `laozhou` 还可以无缝与 `fish`、`zsh`、`bash` 集成，终端打字直接无缝对话！
 
 ![](./pics/shell-init.png)
 
-`miyu` 还自带了 TUI 方便修改配置。
+`laozhou` 还自带了 TUI 方便修改配置。
 
 ```
-miyu config
+laozhou config
 ```
 
 ![](./pics/tui.png)
@@ -33,7 +35,7 @@ miyu config
 - Arch Linux
 
   ```
-  yay -S miyu
+  yay -S laozhou
   ```
 
 - 从源码构建
@@ -41,10 +43,10 @@ miyu config
   需要安装 Rust 1.96 或更新版本、C 编译工具链、`pkg-config` 和 ALSA 开发库，图片显示功能依赖 `chafa`。Arch Linux、Fedora 和 Ubuntu 24.04 均已验证可构建。
 
   ```
-  git clone https://github.com/SHORiN-KiWATA/Miyu.git
-  cd Miyu
+  git clone https://github.com/SHORiN-KiWATA/Laozhou.git
+  cd Laozhou
   cargo build --release --locked
-  ./target/release/miyu --version
+  ./target/release/laozhou --version
   ```
 
   各发行版依赖示例：
@@ -64,13 +66,13 @@ miyu config
 
 ### 界面语言
 
-Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在 `miyu config` 的“全局设置 / Global Settings”中可将“界面语言 / Interface language”设为：
+Laozhou 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在 `laozhou config` 的"全局设置 / Global Settings"中可将"界面语言 / Interface language"设为：
 
 - `auto`：默认值，跟随系统 locale
 - `en`：英文
 - `zh`：简体中文
 
-`MIYU_LANG=en` 或 `MIYU_LANG=zh` 可以临时覆盖配置。语言选择优先级为 `MIYU_LANG`、`display.language`、系统 locale；在配置 TUI 中保存后，下次启动 Miyu 时生效。
+`LAOZHOU_LANG=en` 或 `LAOZHOU_LANG=zh` 可以临时覆盖配置。语言选择优先级为 `LAOZHOU_LANG`、`display.language`、系统 locale；在配置 TUI 中保存后，下次启动 Laozhou 时生效。
 
 ### 内置插件
 
@@ -78,18 +80,18 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
 <br>
 
 - 表情包
-  
-  表情包毫无疑问是聊天时最重要的部分，在对话时，Miyu 会根据情景自主发送符合情境的表情包。除了自主发送，设置里还可以设置概率、置信度和冷却时间。
+
+  表情包毫无疑问是聊天时最重要的部分，在对话时，Laozhou 会根据情景自主发送符合情境的表情包。除了自主发送，设置里还可以设置概率、置信度和冷却时间。
 
   ![](./pics/nvidiafuckyou.png)
 
-  Miyu 自带了一些表情，存放在`/usr/share/miyu`，对应的用户空间目录是`~/.local/share/miyu`。表情库是跟随人格的，如果你在设置里新建了自己的人格，那么就无法使用 Miyu 的默认表情。你可以准备一些图片，把路径给 Ai，让其保存到表情库。届时会自动调用识图模型对图片进行分析并保存。Miyu 默认使用 opencode 公共模型服务中的多模态模型进行识图，所以即使不配置自己的多模态模型也可以看图片。
+  Laozhou 自带了一些表情，存放在`/usr/share/laozhou`，对应的用户空间目录是`~/.local/share/laozhou`。表情库是跟随人格的，如果你在设置里新建了自己的人格，那么就无法使用 Laozhou 的默认表情。你可以准备一些图片，把路径给 Ai，让其保存到表情库。届时会自动调用识图模型对图片进行分析并保存。Laozhou 默认使用 opencode 公共模型服务中的多模态模型进行识图，所以即使不配置自己的多模态模型也可以看图片。
 
 - 玄学算命
 
   >心理学。
-  
-  算命就像看天气预报一般稀松平常。Miyu 自带了周易六十四卦、吉凶占、塔罗牌抽取等玄学功能。
+
+  算命就像看天气预报一般稀松平常。Laozhou 自带了周易六十四卦、吉凶占、塔罗牌抽取等玄学功能。
 
   ![](./pics/玄学.png)
 
@@ -106,16 +108,16 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
 - 闹钟
 
   >要我说，这比GNOME时钟的闹钟好用多了
-  
-  Miyu 自带了闹钟，日常泡泡面、番茄钟学习、计时任务什么的都很实用。内置了闹钟音频，你还可以通过路径传入你想要在到点后播放的“闹钟”。
+
+  Laozhou 自带了闹钟，日常泡泡面、番茄钟学习、计时任务什么的都很实用。内置了闹钟音频，你还可以通过路径传入你想要在到点后播放的"闹钟"。
 
   ![](./pics/set_alarm.png)
 
 - 知识库
 
-  Miyu 自带了 [ShorinWiki](https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide) 中的内容和一些日用 Linux 会遇到的问题作为默认知识库。
+  Laozhou 自带了 [ShorinWiki](https://github.com/SHORiN-KiWATA/Shorin-ArchLinux-Guide) 中的内容和一些日用 Linux 会遇到的问题作为默认知识库。
 
-  当然，你也可以通过 `miyu kb` 命令，或者通过跟 AI 的自然语言交互管理属于你自己的知识库。
+  当然，你也可以通过 `laozhou kb` 命令，或者通过跟 AI 的自然语言交互管理属于你自己的知识库。
 
   ![](./pics/kb.png)
 
@@ -127,19 +129,19 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
 
   >这个游戏 Linux 能玩吗？
 
-  这是桌面端使用 Linux 的日经问题，Miyu 会去 [ProtonDB](https://www.protondb.com/)、[Are We Anti-Cheat Yet?](https://areweanticheatyet.com/)、[Can I Play On Linux](https://caniplayonlinux.com/)等 Linux游戏兼容性资讯网站获取主要信息，辅以社区玩家的声音，综合判断一款游戏的兼容性并提出建议和注意事项。
+  这是桌面端使用 Linux 的日经问题，Laozhou 会去 [ProtonDB](https://www.protondb.com/)、[Are We Anti-Cheat Yet?](https://areweanticheatyet.com/)、[Can I Play On Linux](https://caniplayonlinux.com/)等 Linux游戏兼容性资讯网站获取主要信息，辅以社区玩家的声音，综合判断一款游戏的兼容性并提出建议和注意事项。
 
   ![](./pics/gaming.png)
 
 - 网络搜索
 
-  即使不配置网络搜索 API，Miyu 也仍然拥有基础的网络搜索和网页读取能力。可以在插件配置中设置 Tavily、Firecrawl 、AnySearch、SearXNG 等网络搜索 API 以获得更佳的搜索效果。
+  即使不配置网络搜索 API，Laozhou 也仍然拥有基础的网络搜索和网页读取能力。可以在插件配置中设置 Tavily、Firecrawl 、AnySearch、SearXNG 等网络搜索 API 以获得更佳的搜索效果。
 
   ![](./pics/web-search-config.png)
 
 - 搜图
 
-  Miyu 还能帮你找图片喔！搜图会根据网络环境并行使用多个来源，并通过视觉模型筛选相关且安全的结果。图片会默认保存至`XDG图片目录/Miyu`。
+  Laozhou 还能帮你找图片！搜图会根据网络环境并行使用多个来源，并通过视觉模型筛选相关且安全的结果。图片会默认保存至`XDG图片目录/Laozhou`。
 
   >NSFW 禁止！
 
@@ -147,7 +149,7 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
 
 - 生图
 
-  支持 OpenAI 的画图服务喔。图片会默认保存至`XDG图片目录/Miyu`。
+  支持 OpenAI 的画图服务。图片会默认保存至`XDG图片目录/Laozhou`。
 
   >这个功能默认用不了，要自己在插件设置里开启并配置 API
 
@@ -170,12 +172,12 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
   >Man！
 
   专门的手册查询工具，虽然网络搜索也能做到，但这值得做成单独的插件。
-  
+
   ![](./pics/man.png)
 
 - Arch Linux相关
 
-  Arch Linux 是桌面 Linux 的热门之选，Miyu 有一系列插件可以帮助提高 Arch Linux 的日用体验。
+  Arch Linux 是桌面 Linux 的热门之选，Laozhou 有一系列插件可以帮助提高 Arch Linux 的日用体验。
 
   - AUR 状态查询
 
@@ -191,13 +193,13 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
 
   - Arch Wiki 查询
 
-    作为 “Linux 圣经”，查询 Arch Wiki 不仅能提高日用 Arch 的体验，对其他发行版也大有裨益。
+    作为 "Linux 圣经"，查询 Arch Wiki 不仅能提高日用 Arch 的体验，对其他发行版也大有裨益。
 
     ![](./pics/archwiki.png)
 
   - PKGBUILD 审查
 
-    AUR 投毒的事件搞得人心惶惶，但现在，Miyu 可以帮忙审查 PKGBUILD 啦！
+    AUR 投毒的事件搞得人心惶惶，但现在，Laozhou 可以帮忙审查 PKGBUILD 啦！
 
     ![](./pics/pkgbuild审核.png)
 
@@ -205,17 +207,17 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
 
   >自不必说。
 
-  Miyu 支持读写文件、搜索内容、查找文件、删除文件等。
+  Laozhou 支持读写文件、搜索内容、查找文件、删除文件等。
 
 - 计算器和哈希编解码
 
-  为了计算结果的准确性，Miyu 自带了科学计算器和哈希编解码的能力。
+  为了计算结果的准确性，Laozhou 自带了科学计算器和哈希编解码的能力。
 
   ![](./pics/hash.png)
 
 - 记忆系统
 
-  Miyu 的记忆由两部分组成，其一是“曾经发生的事”，其二是“信息中的知识点”。对话时会根据用户消息自动召回条目，这是联想功能。
+  Laozhou 的记忆由两部分组成，其一是"曾经发生的事"，其二是"信息中的知识点"。对话时会根据用户消息自动召回条目，这是联想功能。
 
   ![](./pics/记忆.png)
 
@@ -223,7 +225,7 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
 
   >Token 燃烧警告
 
-  重量级插件。对于一个命题，Miyu 可以引经据典，有理有据地进行深度研究并写出研究报告。
+  重量级插件。对于一个命题，Laozhou 可以引经据典，有理有据地进行深度研究并写出研究报告。
 
   ![](./pics/深度研究.png)
 
@@ -239,31 +241,31 @@ Miyu 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。�
 
 ## 做出贡献
 
-<details><summary>[展开/收起] 如果你想要一同开发 Miyu 请先阅读下面的内容</summary>
+<details><summary>[展开/收起] 如果你想要一同开发 Laozhou 请先阅读下面的内容</summary>
 <br>
 
 ### 设计理念
 
-Miyu 的定位是桌面助手，不是 Coding Agent，她更注重拟真、系统集成度、实用、日常排障等方面。Miyu 应该开箱即用，并且足够轻量，不开发超重的 3D 桌宠，不使用 GUI 框架，也不设计需要学习成本的 CLI 选项，尽量通过自然语言和无缝无感的触发方式进行所有的操作。
+Laozhou 的定位是 Linux 桌面助手，不是 Coding Agent。他更注重系统集成度、实用、日常排障等方面。Laozhou 应该开箱即用，并且足够轻量，不开发超重的 3D 桌宠，不使用 GUI 框架，也不设计需要学习成本的 CLI 选项，尽量通过自然语言和无缝无感的触发方式进行所有的操作。
 
 以下是一些可能的方向：
 
 - 提升系统日常排障能力、系统维护能力
 
-  作为桌面助手，尤其是 Linux 桌面端助手，对日常问题的排障能力是重重之中。她应当能够解决日用系统会遇到的问题，如输入法异常、显卡驱动异常、桌面软件崩溃等。
+  作为桌面助手，尤其是 Linux 桌面端助手，对日常问题的排障能力是重中之重。他应当能够解决日用系统会遇到的问题，如输入法异常、显卡驱动异常、桌面软件崩溃等。
 
 - 知识和信息
 
   扩充默认的知识库。增加对软件推荐、游戏兼容性调查、时事新闻、学习辅助等非开发场景下会出现的情景的处理能力。增加知识和信息检索的时效性和可靠性也是关键点。
 
-- 提升角色扮演能力，提高对话娱乐性和拟真度
+- 提升角色扮演能力，提高对话真实感
 
-  需要更多像“发送表情包”、“玄学算命”那样提升对话时的趣味性或拟真度的功能。TTS、语音对话等重要功能也在日程上。
+  需要更多提升对话时的真实感的功能。老周的人设核心是"丧但靠谱的运维老油条"，功能开发应围绕这一定位展开。
 
 - 提高和系统的无缝集成
 
-  不使用任何命令作为触发器，能够直接使用自然语言开启对话。目前是通过 Command Not Found 内容交给 Miyu 的方式做到和终端的无缝集成，但是逐行解释命令的特点导致提示词包含多行内容时每一行都会调用一次，如何支持多行无缝对话是一个需要研究的点。
-  
+  不使用任何命令作为触发器，能够直接使用自然语言开启对话。目前是通过 Command Not Found 内容交给 Laozhou 的方式做到和终端的无缝集成，但是逐行解释命令的特点导致提示词包含多行内容时每一行都会调用一次，如何支持多行无缝对话是一个需要研究的点。
+
   终端以外的集成也值得研究，例如做成守护进程，拥有持续运行的能力，监听系统事件，在特定事件发生时做出特定反应等。
 
 - 优化功能和修复 BUG
@@ -276,11 +278,17 @@ PR时必须提供功能的设计理念，作用场景和实际意义。一个 PR
 
 </details>
 
-
 ## 致谢
 
-- [opencode](https://github.com/anomalyco/opencode) 最好的开源 Coding Agent。
+- [Miyu](https://github.com/SHORiN-KiWATA/Miyu) 本项目基于 Miyu 的框架改造，感谢 SHORiN-KiWATA 的开源工作。
+- [opencode](https://github.com/anomalyco/opencode) 最好的开源 Coding Agent，提供了默认的公共模型服务。
+
+## 创建者
+
+**乌龙**
+
+"老周"的角色原型来自乌龙的同事——一位真实的 Linux 运维工程师。
 
 ## 许可
 
-Miyu 使用 MIT License 发布，见 `LICENSE`。
+Laozhou 使用 MIT License 发布，见 `LICENSE`。

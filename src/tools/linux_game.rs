@@ -5,7 +5,7 @@ use crate::i18n::{is_zh, text as t};
 use crate::llm::{
     ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage,
 };
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -27,7 +27,7 @@ const OUTPUT_INSTRUCTION: &str = r#"这是 Linux 游戏兼容性调查子代理�
 #[derive(Clone)]
 struct GameCompatibilityContext {
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: LaozhouPaths,
     tools: ToolRegistry,
 }
 
@@ -179,7 +179,7 @@ fn estimate_tokens(texts: &[&str]) -> u64 {
 pub fn register(
     registry: &mut ToolRegistry,
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: LaozhouPaths,
     tools: ToolRegistry,
 ) {
     let context = GameCompatibilityContext {
@@ -487,7 +487,7 @@ async fn gather_linux_game_compatibility_signals(args: Value) -> Result<String> 
         .to_string();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("miyu-linux-game-compatibility/0.1")
+        .user_agent("laozhou-linux-game-compatibility/0.1")
         .build()?;
     let (steam, steam_attempts) = steam_search_candidates(&client, &candidates).await;
     let appid = steam["appid"].as_u64();

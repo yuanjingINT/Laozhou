@@ -2,7 +2,7 @@ use crate::config::{AppConfig, ProviderConfig, MAX_COMMAND_OUTPUT_LINES};
 use crate::default_kb;
 use crate::default_models::{OPENCODE_DEFAULT_VISION_MODEL, OPENCODE_PROVIDER_ID};
 use crate::i18n::{is_zh, text as t};
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use anyhow::{bail, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -17,7 +17,7 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
-pub fn run(paths: &MiyuPaths) -> Result<()> {
+pub fn run(paths: &LaozhouPaths) -> Result<()> {
     AppConfig::init_files(paths)?;
     crate::models_cache::try_load(paths);
     crate::models_cache::spawn_background_refresh(paths.clone());
@@ -37,7 +37,7 @@ impl TerminalSession {
         Ok(Self { stdout })
     }
 
-    fn run(mut self, paths: &MiyuPaths, mut config: AppConfig) -> Result<()> {
+    fn run(mut self, paths: &LaozhouPaths, mut config: AppConfig) -> Result<()> {
         let result = run_main_menu(&mut self.stdout, paths, &mut config);
         execute!(self.stdout, Show, LeaveAlternateScreen)?;
         terminal::disable_raw_mode()?;
@@ -55,7 +55,7 @@ impl Drop for TerminalSession {
 
 fn run_main_menu(
     stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &mut AppConfig,
 ) -> Result<bool> {
     let mut selected = 0usize;
@@ -84,14 +84,14 @@ fn run_main_menu(
             .filter(|status| status.has_update_notice)
             .map(|_| {
                 t(
-                    "The default knowledge base needs an update; run miyu update-default-kb",
-                    "默认知识库需要更新，运行 miyu update-default-kb",
+                    "The default knowledge base needs an update; run laozhou update-default-kb",
+                    "默认知识库需要更新，运行 laozhou update-default-kb",
                 )
             })
             .unwrap_or("");
         draw_menu(
             stdout,
-            t(" MIYU CONFIG ", " MIYU 配置 "),
+            t(" LAOZHOU CONFIG ", " LAOZHOU 配置 "),
             &options,
             selected,
             status,
@@ -899,13 +899,13 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
 
 fn edit_custom_prompts(
     stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
     let mut selected = 0usize;
     loop {
         let persona = if config.prompt.active_persona.trim().is_empty() {
-            "Miyu".to_string()
+            "Laozhou".to_string()
         } else {
             persona_display_name(&config.prompt.active_persona).to_string()
         };
@@ -935,7 +935,7 @@ fn edit_custom_prompts(
     }
 }
 
-fn edit_personas(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppConfig) -> Result<()> {
+fn edit_personas(stdout: &mut io::Stdout, paths: &LaozhouPaths, config: &mut AppConfig) -> Result<()> {
     std::fs::create_dir_all(config.prompts_dir_path(paths))?;
     let mut selected = 0usize;
     loop {
@@ -946,7 +946,7 @@ fn edit_personas(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppCon
         } else {
             "  "
         };
-        options.push(format!("{default_marker}Miyu"));
+        options.push(format!("{default_marker}Laozhou"));
         options.extend(personas.iter().map(|name| {
             let display = persona_display_name(name);
             if *name == config.prompt.active_persona {
@@ -1012,7 +1012,7 @@ fn edit_personas(stdout: &mut io::Stdout, paths: &MiyuPaths, config: &mut AppCon
 
 fn new_persona(
     stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &AppConfig,
 ) -> Result<Option<String>> {
     edit_prompt_file_form(
@@ -1026,7 +1026,7 @@ fn new_persona(
 
 fn edit_persona(
     stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &AppConfig,
     current_name: &str,
 ) -> Result<Option<String>> {
@@ -1049,7 +1049,7 @@ fn edit_persona(
 }
 
 fn move_persona_scope(
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &AppConfig,
     old_name: &str,
     new_name: &str,
@@ -1072,7 +1072,7 @@ fn move_persona_scope(
     Ok(())
 }
 
-fn remove_persona_scope(paths: &MiyuPaths, config: &AppConfig, name: &str) -> Result<()> {
+fn remove_persona_scope(paths: &LaozhouPaths, config: &AppConfig, name: &str) -> Result<()> {
     remove_dir_if_exists(config.persona_memory_data_dir(paths, name))?;
     remove_dir_if_exists(config.persona_memory_state_dir(paths, name))?;
     remove_dir_if_exists(config.persona_skills_dir(paths, name))?;
@@ -1102,7 +1102,7 @@ fn remove_dir_if_exists(path: PathBuf) -> Result<()> {
 
 fn edit_identities(
     stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &mut AppConfig,
 ) -> Result<()> {
     std::fs::create_dir_all(config.identities_dir_path(paths))?;
@@ -1182,7 +1182,7 @@ fn edit_identities(
 
 fn new_identity(
     stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &AppConfig,
 ) -> Result<Option<String>> {
     edit_prompt_file_form(
@@ -1196,7 +1196,7 @@ fn new_identity(
 
 fn edit_identity(
     stdout: &mut io::Stdout,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &AppConfig,
     current_name: &str,
 ) -> Result<Option<String>> {
@@ -1218,11 +1218,11 @@ fn edit_identity(
     )
 }
 
-fn list_identities(paths: &MiyuPaths, config: &AppConfig) -> Result<Vec<String>> {
+fn list_identities(paths: &LaozhouPaths, config: &AppConfig) -> Result<Vec<String>> {
     list_markdown_files(&config.identities_dir_path(paths))
 }
 
-fn read_identity(paths: &MiyuPaths, config: &AppConfig, name: &str) -> Result<String> {
+fn read_identity(paths: &LaozhouPaths, config: &AppConfig, name: &str) -> Result<String> {
     let path = config.identity_path(paths, name);
     if path.exists() {
         Ok(std::fs::read_to_string(path)?)
@@ -1231,7 +1231,7 @@ fn read_identity(paths: &MiyuPaths, config: &AppConfig, name: &str) -> Result<St
     }
 }
 
-fn write_identity(paths: &MiyuPaths, config: &AppConfig, name: &str, content: &str) -> Result<()> {
+fn write_identity(paths: &LaozhouPaths, config: &AppConfig, name: &str, content: &str) -> Result<()> {
     let path = config.identity_path(paths, name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1268,7 +1268,7 @@ where
     Ok(Some(name))
 }
 
-fn list_personas(paths: &MiyuPaths, config: &AppConfig) -> Result<Vec<String>> {
+fn list_personas(paths: &LaozhouPaths, config: &AppConfig) -> Result<Vec<String>> {
     list_markdown_files(&config.prompts_dir_path(paths))
 }
 
@@ -1290,7 +1290,7 @@ fn list_markdown_files(dir: &std::path::Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
-fn read_persona(paths: &MiyuPaths, config: &AppConfig, name: &str) -> Result<String> {
+fn read_persona(paths: &LaozhouPaths, config: &AppConfig, name: &str) -> Result<String> {
     let path = config.persona_path(paths, name);
     if path.exists() {
         Ok(std::fs::read_to_string(path)?)
@@ -1299,7 +1299,7 @@ fn read_persona(paths: &MiyuPaths, config: &AppConfig, name: &str) -> Result<Str
     }
 }
 
-fn write_persona(paths: &MiyuPaths, config: &AppConfig, name: &str, content: &str) -> Result<()> {
+fn write_persona(paths: &LaozhouPaths, config: &AppConfig, name: &str, content: &str) -> Result<()> {
     let path = config.persona_path(paths, name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1343,7 +1343,7 @@ fn parse_key_list(value: &str) -> Vec<String> {
 }
 
 struct ProviderBrowser<'a> {
-    paths: &'a MiyuPaths,
+    paths: &'a LaozhouPaths,
     config: &'a mut AppConfig,
     active_col: usize,
     provider_idx: usize,
@@ -1364,7 +1364,7 @@ struct ProviderBrowser<'a> {
 }
 
 impl<'a> ProviderBrowser<'a> {
-    fn new(paths: &'a MiyuPaths, config: &'a mut AppConfig) -> Self {
+    fn new(paths: &'a LaozhouPaths, config: &'a mut AppConfig) -> Self {
         Self {
             paths,
             config,
@@ -1872,7 +1872,7 @@ fn fetch_models(provider: &ProviderConfig) -> Result<Vec<String>> {
         .build()?
         .get(url)
         .header("Accept", "application/json")
-        .header("User-Agent", "miyu-config");
+        .header("User-Agent", "laozhou-config");
     if !api_key.is_empty() {
         request = request.bearer_auth(api_key);
     }
@@ -1891,7 +1891,7 @@ fn fetch_models(provider: &ProviderConfig) -> Result<Vec<String>> {
         .collect())
 }
 
-fn auto_configure_model_tags(paths: &MiyuPaths, provider: &mut ProviderConfig, model: &str) {
+fn auto_configure_model_tags(paths: &LaozhouPaths, provider: &mut ProviderConfig, model: &str) {
     if provider.model_modalities.contains_key(model) {
         return;
     }

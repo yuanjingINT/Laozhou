@@ -3,7 +3,7 @@ use crate::cli::{build_tool_registry, WebArgs};
 use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::llm::{ChatResult, ChatStreamKind, OpenAiCompatibleClient, Usage};
 use crate::memory::MemoryStore;
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use crate::question::{self, QuestionAnswers, QuestionRequest, QuestionResponse};
 use crate::state::{
     ImageAsset, QueuedPrompt, StateStore, Turn, TurnFollowup, TurnStatus, UsageSnapshot,
@@ -47,21 +47,21 @@ const MAX_PROMPT_DOCUMENT_CHARS: usize = 200_000;
 const MAX_PROMPT_DOCUMENTS: usize = 128;
 const MAX_SECRET_CHARS: usize = 100_000;
 const EVENT_CAPACITY: usize = 4096;
-const AUTH_COOKIE: &str = "miyu_session";
+const AUTH_COOKIE: &str = "laozhou_session";
 const LOGIN_WINDOW: Duration = Duration::from_secs(60);
 const LOGIN_ATTEMPT_LIMIT: u8 = 5;
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const STYLES_CSS: &str = include_str!("../web/styles.css");
 const APP_JS: &str = include_str!("../web/app.js");
-const MIYU_LOGO: &[u8] = include_bytes!("../pics/miyu-logo.png");
-const MIYU_WALLPAPER: &[u8] = include_bytes!("../pics/miyuwallpaper.png");
+const LAOZHOU_LOGO: &[u8] = include_bytes!("../pics/laozhou-logo.png");
+const LAOZHOU_WALLPAPER: &[u8] = include_bytes!("../pics/laozhouwallpaper.png");
 
 #[derive(Clone)]
 struct WebState {
     auth: WebAuth,
     boot_id: Arc<str>,
-    paths: MiyuPaths,
+    paths: LaozhouPaths,
     manager: Arc<Mutex<ManagerState>>,
     state_store: StateStore,
     events: EventHub,
@@ -873,7 +873,7 @@ struct ModelResponse {
     context: ContextSnapshot,
 }
 
-pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
+pub async fn run(paths: LaozhouPaths, args: WebArgs) -> Result<()> {
     let password = resolve_web_password(&args)?;
     AppConfig::init_files(&paths)?;
     let config = AppConfig::load_or_default(&paths)?;
@@ -899,7 +899,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         args.port,
     ))
     .await
-    .with_context(|| format!("binding Miyu WebUI to 0.0.0.0:{}", args.port))?;
+    .with_context(|| format!("binding Laozhou WebUI to 0.0.0.0:{}", args.port))?;
     let port = listener.local_addr()?.port();
     let boot_id: Arc<str> = random_id("boot", 18).into();
     let events = EventHub::new();
@@ -932,7 +932,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
     let app = router(state);
     let urls = web_access_urls(port);
     for url in &urls {
-        println!("Miyu WebUI: {url}");
+        println!("Laozhou WebUI: {url}");
     }
     std::io::stdout().flush().ok();
     if !args.no_open {
@@ -954,7 +954,7 @@ pub async fn run(paths: MiyuPaths, args: WebArgs) -> Result<()> {
         .await
         .context("joining WebUI actor task")?
         .map_err(|_| anyhow::anyhow!("WebUI actor thread panicked"))?;
-    serve_result.context("serving Miyu WebUI")?;
+    serve_result.context("serving Laozhou WebUI")?;
     actor_result
 }
 
@@ -963,8 +963,8 @@ fn router(state: WebState) -> Router {
         .route("/", get(index_asset))
         .route("/styles.css", get(styles_asset))
         .route("/app.js", get(app_asset))
-        .route("/assets/miyu-logo.png", get(logo_asset))
-        .route("/assets/miyuwallpaper.png", get(wallpaper_asset))
+        .route("/assets/laozhou-logo.png", get(logo_asset))
+        .route("/assets/laozhouwallpaper.png", get(wallpaper_asset))
         .route("/api/health", get(health))
         .route("/api/auth/login", post(auth_login))
         .route("/api/bootstrap", get(bootstrap))
@@ -995,11 +995,11 @@ async fn app_asset() -> Response {
 }
 
 async fn logo_asset() -> Response {
-    binary_asset(MIYU_LOGO, "image/png")
+    binary_asset(LAOZHOU_LOGO, "image/png")
 }
 
 async fn wallpaper_asset() -> Response {
-    binary_asset(MIYU_WALLPAPER, "image/png")
+    binary_asset(LAOZHOU_WALLPAPER, "image/png")
 }
 
 fn text_asset(content: &'static str, content_type: &'static str) -> Response {
@@ -1443,7 +1443,7 @@ fn enqueue_running_prompt(
         if manager.admin_busy {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
-                "Miyu is busy with another operation",
+                "Laozhou is busy with another operation",
             ));
         }
         manager.active_run_id.clone()
@@ -1532,7 +1532,7 @@ async fn create_turn(
         if manager.active_run_id.is_some() || manager.admin_busy {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
-                "Miyu is busy with another operation",
+                "Laozhou is busy with another operation",
             ));
         }
         manager.active_run_id = Some(run_id.clone());
@@ -1784,7 +1784,7 @@ async fn reset_conversation(
 fn spawn_actor(
     agent: Agent,
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: LaozhouPaths,
     state_store: StateStore,
     manager: Arc<Mutex<ManagerState>>,
     events: EventHub,
@@ -1792,7 +1792,7 @@ fn spawn_actor(
 ) -> Result<(mpsc::UnboundedSender<ActorCommand>, JoinHandle<Result<()>>)> {
     let (sender, receiver) = mpsc::unbounded_channel();
     let join = std::thread::Builder::new()
-        .name("miyu-web-agent".to_string())
+        .name("laozhou-web-agent".to_string())
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1818,7 +1818,7 @@ fn spawn_actor(
 async fn actor_loop(
     mut agent: Agent,
     mut config: AppConfig,
-    paths: MiyuPaths,
+    paths: LaozhouPaths,
     state_store: StateStore,
     manager: Arc<Mutex<ManagerState>>,
     events: EventHub,
@@ -1904,7 +1904,7 @@ async fn actor_loop(
 async fn run_agent_turn(
     agent: &mut Agent,
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     state_store: &StateStore,
     manager: &Arc<Mutex<ManagerState>>,
     events: &EventHub,
@@ -2124,7 +2124,7 @@ fn active_directive(
 fn rebuild_for_models(
     agent: &mut Agent,
     config: &mut AppConfig,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     state_store: &StateStore,
     manager: &Arc<Mutex<ManagerState>>,
     models: &[ActiveProviderModelConfig],
@@ -2166,7 +2166,7 @@ fn rebuild_for_models(
 fn rebuild_for_config(
     agent: &mut Agent,
     config: &mut AppConfig,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     state_store: &StateStore,
     manager: &Arc<Mutex<ManagerState>>,
     events: &EventHub,
@@ -2278,7 +2278,7 @@ fn rebuild_for_config(
 fn reset_actor_conversation(
     agent: &mut Agent,
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     state_store: &StateStore,
     manager: &Arc<Mutex<ManagerState>>,
     events: &EventHub,
@@ -2390,7 +2390,7 @@ fn reserve_admin(manager: &Arc<Mutex<ManagerState>>) -> std::result::Result<(), 
     if manager.active_run_id.is_some() || manager.admin_busy {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
-            "Miyu is busy with another operation",
+            "Laozhou is busy with another operation",
         ));
     }
     manager.admin_busy = true;
@@ -2418,7 +2418,7 @@ fn release_admin(manager: &Arc<Mutex<ManagerState>>) {
 fn config_response(
     config: &AppConfig,
     context: ContextSnapshot,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
 ) -> std::result::Result<ConfigResponse, ApiError> {
     let mut redacted = config.clone();
     let mut secret_states = HashMap::new();
@@ -2752,7 +2752,7 @@ fn validate_prompt_document_name(name: &str, kind: &str) -> std::result::Result<
     Ok(())
 }
 
-fn read_prompt_documents(config: &AppConfig, paths: &MiyuPaths) -> Result<PromptDocuments> {
+fn read_prompt_documents(config: &AppConfig, paths: &LaozhouPaths) -> Result<PromptDocuments> {
     Ok(PromptDocuments {
         personas: read_prompt_document_dir(&config.prompts_dir_path(paths))?,
         identities: read_prompt_document_dir(&config.identities_dir_path(paths))?,
@@ -2821,7 +2821,7 @@ fn apply_prompt_documents(
     next_config: &AppConfig,
     current: &PromptDocuments,
     next: &PromptDocuments,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
 ) -> Result<Vec<FileBackup>> {
     let mut mutations = HashMap::<PathBuf, Option<Vec<u8>>>::new();
     collect_prompt_file_mutations(
@@ -2869,7 +2869,7 @@ fn apply_persona_scope_changes(
     next_config: &AppConfig,
     current: &PromptDocuments,
     next: &PromptDocuments,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
 ) -> Result<Vec<PersonaScopeBackup>> {
     let mut changes = Vec::<(String, Option<String>)>::new();
     for document in &current.personas {
@@ -2909,7 +2909,7 @@ fn apply_persona_scope_changes(
                     .parent()
                     .context("persona scope path has no parent")?;
                 let staged = parent.join(format!(
-                    ".miyu-web-scope-{}-{change_index}-{scope_index}",
+                    ".laozhou-web-scope-{}-{change_index}-{scope_index}",
                     random_token(10)
                 ));
                 std::fs::rename(&original, &staged)?;
@@ -3497,7 +3497,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             COOKIE,
-            HeaderValue::from_static("other=1; miyu_session=secret-token; suffix=2"),
+            HeaderValue::from_static("other=1; laozhou_session=secret-token; suffix=2"),
         );
         assert_eq!(cookie_value(&headers, AUTH_COOKIE), Some("secret-token"));
         assert_eq!(cookie_value(&headers, "session"), None);
@@ -3563,7 +3563,7 @@ mod tests {
         config.plugins.exchange_rate.api_key = "exchange-secret".to_string();
         config.plugins.image_generation.api_keys = vec!["image-secret".to_string()];
         let paths = tempfile::tempdir().unwrap();
-        let paths = MiyuPaths {
+        let paths = LaozhouPaths {
             config_dir: paths.path().join("config"),
             config_file: paths.path().join("config/config.jsonc"),
             skills_dir: paths.path().join("config/skills"),

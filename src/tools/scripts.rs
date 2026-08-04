@@ -1,7 +1,7 @@
 use super::registry::UnregisteredScript;
 use super::{ToolRegistry, ToolSpec};
 use crate::i18n::{agent_is_zh, agent_text as t, is_zh};
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use crate::tools::tool_descriptions::LoadPolicy;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -72,7 +72,7 @@ struct ScriptDisplayNames {
     en: Option<String>,
 }
 
-pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
+pub fn register(registry: &mut ToolRegistry, paths: &LaozhouPaths) {
     let dirs = [
         paths.system_scripts_dir.as_path(),
         paths.scripts_dir.as_path(),
@@ -84,7 +84,7 @@ pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
     register_script_tools(registry, paths.scripts_dir.clone());
 }
 
-pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &MiyuPaths) {
+pub fn rescan_scripts(registry: &mut ToolRegistry, paths: &LaozhouPaths) {
     let dirs = [
         paths.system_scripts_dir.as_path(),
         paths.scripts_dir.as_path(),
@@ -608,7 +608,7 @@ fn register_script_tools(registry: &mut ToolRegistry, scripts_dir: PathBuf) {
                 },
                 "description": {
                     "type": "string",
-                    "description": t("Optional tool description override. If omitted, Miyu reads the script header lines `Description:`/`description:` or `描述：` and sends only one localized description to the AI.", "可选的工具描述覆盖。省略时 Miyu 会读取脚本头部的 `Description:`/`description:` 或 `描述：`，并只向 AI 提供一条本地化描述。")
+                    "description": t("Optional tool description override. If omitted, Laozhou reads the script header lines `Description:`/`description:` or `描述：` and sends only one localized description to the AI.", "可选的工具描述覆盖。省略时 Laozhou 会读取脚本头部的 `Description:`/`description:` 或 `描述：`，并只向 AI 提供一条本地化描述。")
                 },
                 "path": {
                     "type": "string",

@@ -22,6 +22,15 @@
 
 ## 警告：`nvidia`和`nvidia-dkms`已经不存在了，需要装`nvidia`的显卡要去aur上装`nvidia-版本号-dkms`，详情看表格。
 
+> **2025 年 12 月重要变更（NVIDIA 590 驱动）：**
+> 随着 NVIDIA 驱动更新到 590 版本，Arch 官方仓库的包名发生了如下替换：
+> - `nvidia` → `nvidia-open`
+> - `nvidia-dkms` → `nvidia-open-dkms`
+> - `nvidia-lts` → `nvidia-lts-open`
+>
+> 590 驱动不再支持 Pascal（GTX 10系）及更老的显卡（Maxwell、Volta）。这些显卡必须改用 AUR 中的 `nvidia-580xx-dkms` 遗留驱动。
+> Turing（RTX 20系 / GTX 16系）及更新的显卡会在系统升级时自动迁移到 `nvidia-open`（开放内核模块），无需手动干预。
+
 ---
 
 ### 工具集与 N 卡视频硬件编解码安装指南
@@ -38,7 +47,7 @@ sudo pacman -S --needed linux-headers
 如果你使用其他内核（例如 `linux-zen`）： 请替换为相应的包名（如 `linux-zen-headers`）。
 
 2. 安装驱动及工具集
-除了对照表中的驱动包外，还需要安装基础的 `nvidia-utils`。如果驱动包不是`nvidia-open`，需要从aur安装对应版本的工具集，如`nvidia-580xx-dkms`需要安装`nvidia-580xx-utils`。为了支持 32 位应用（如 Steam 游戏），建议一并安装 lib32- 的工具集：
+除了对照表中的驱动包外，还需要安装基础的 `nvidia-utils`。**如果使用的是 legacy 遗留驱动包（如 `nvidia-580xx-dkms`、`nvidia-470xx-dkms` 等），必须从 AUR 安装与之版本号匹配的工具集**（如 `nvidia-580xx-utils`、`lib32-nvidia-580xx-utils`），不能混用官方仓库的 `nvidia-utils`。对于 `nvidia-open` / `nvidia-open-dkms` 系列的现代驱动，直接使用官方仓库的 `nvidia-utils` 和 `lib32-nvidia-utils` 即可。为了支持 32 位应用（如 Steam 游戏），建议一并安装 lib32- 的工具集：
 ```
 sudo pacman -S nvidia-open-dkms nvidia-utils lib32-nvidia-utils
 ```
@@ -49,7 +58,7 @@ NVIDIA 的硬件编解码由 `nvidia-utils` 和 `libva-nvidia-driver` 提供：
 
 sudo pacman -S libva-nvidia-driver
 
-进阶提示：也可以将其替换为 `nvidia-vaapi-driver`，按照 ArchWiki 的说法，这个包的功耗可能会更低（注意该包位于 archlinuxcn 仓库中）。
+> 注：`libva-nvidia-driver` 就是上游项目 `nvidia-vaapi-driver`（GitHub: elFarto/nvidia-vaapi-driver）在 Arch 官方仓库中的包名，两者是同一个软件，无需另外从 AUR 或 archlinuxcn 安装。
 
 4. 重启并验证 (可选)
 驱动和编解码包安装完成后，重启系统 (reboot) 以激活显卡驱动。

@@ -3,6 +3,8 @@
 **元数据 (Metadata)**
 - **软件名称**: niri (Wayland 复合管理器 / Scrollable Tiling Window Manager)
 - **版本号**: v26.04
+- **发布日期**: 2026-04-25
+- **版本状态**: 截至 2026 年 8 月，为 niri 最新稳定版本；下一版本（按 YY.MM 命名规则预计为 v26.08）尚在 main 分支开发中
 - **来源链接**: https://github.com/niri-wm/niri/releases/tag/v26.04
 - **相关标签**: Linux, Wayland, Window Manager, niri, Release Notes
 

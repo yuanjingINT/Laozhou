@@ -5,7 +5,7 @@ use crate::config::{ActiveProviderModelConfig, AppConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::llm::{ChatStreamChunk, OpenAiCompatibleClient, ThinkingVariantOptions};
 use crate::memory::MemoryStore;
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use crate::render;
 use crate::shell;
 use crate::state::{QueuedPrompt, QueuedPromptAttachment, StateStore, Turn, TurnStatus};
@@ -274,7 +274,7 @@ fn primary_footer_text(text: &str) -> String {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "miyu", version, about = "Miyu CLI AI Agent")]
+#[command(name = "laozhou", version, about = "Laozhou CLI AI Agent")]
 pub struct Cli {
     #[arg(long)]
     pub plan: bool,
@@ -339,10 +339,10 @@ fn extract_debug_flag(args: &mut Vec<OsString>) -> bool {
 fn localized_command() -> clap::Command {
     let mut command = Cli::command();
     command = command
-        .about(t("Miyu CLI AI Agent", "Miyu 命令行 AI 助手"))
+        .about(t("Laozhou CLI AI Agent", "Laozhou 命令行 AI 助手"))
         .override_usage(t(
-            "miyu [OPTIONS] [MESSAGE]... [COMMAND]",
-            "miyu [选项] [消息]... [命令]",
+            "laozhou [OPTIONS] [MESSAGE]... [COMMAND]",
+            "laozhou [选项] [消息]... [命令]",
         ));
     if is_zh() {
         command = command
@@ -350,12 +350,12 @@ fn localized_command() -> clap::Command {
             .arg_required_else_help(false)
             .next_help_heading("选项")
             .help_template("{about}\n\n用法: {usage}\n\n命令:\n{subcommands}\n参数:\n{positionals}\n选项:\n{options}\n{after-help}")
-            .after_help("提示：不带参数进入 REPL；直接输入消息会发送一次对话。可在配置界面设置语言，MIYU_LANG 可临时覆盖。")
+            .after_help("提示：不带参数进入 REPL；直接输入消息会发送一次对话。可在配置界面设置语言，LAOZHOU_LANG 可临时覆盖。")
             .disable_help_subcommand(true);
     } else {
         command = command
             .after_help(
-                "Tip: run without arguments to enter the REPL; pass MESSAGE to send one chat turn. Set the language in the configuration UI; MIYU_LANG is a temporary override.",
+                "Tip: run without arguments to enter the REPL; pass MESSAGE to send one chat turn. Set the language in the configuration UI; LAOZHOU_LANG is a temporary override.",
             )
             .disable_help_subcommand(true);
     }
@@ -425,8 +425,8 @@ fn localize_top_args(command: clap::Command) -> clap::Command {
         })
         .mut_arg("debug", |arg| {
             arg.help(t(
-                "Write detailed diagnostics to the Miyu log directory",
-                "将详细诊断信息写入 Miyu 日志目录",
+                "Write detailed diagnostics to the Laozhou log directory",
+                "将详细诊断信息写入 Laozhou 日志目录",
             ))
         })
         .mut_arg("stdout", |arg| {
@@ -484,8 +484,8 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         ),
         (
             "remove-shell-hook",
-            "Safely remove installed Miyu shell hooks",
-            "安全删除已安装的 Miyu shell hook",
+            "Safely remove installed Laozhou shell hooks",
+            "安全删除已安装的 Laozhou shell hook",
         ),
         ("history", "Show conversation history", "显示会话历史"),
         (
@@ -496,8 +496,8 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         ("kb", "Manage local knowledge base", "管理本地知识库"),
         (
             "update-default-kb",
-            "Update Miyu default knowledge base",
-            "更新 Miyu 默认知识库",
+            "Update Laozhou default knowledge base",
+            "更新 Laozhou 默认知识库",
         ),
         (
             "memory",
@@ -510,7 +510,7 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "Clear current conversation history",
             "清空当前会话历史",
         ),
-        ("web", "Start the local Miyu WebUI", "启动本地 Miyu WebUI"),
+        ("web", "Start the local Laozhou WebUI", "启动本地 Laozhou WebUI"),
     ];
     for (name, en, zh) in descriptions {
         command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
@@ -797,7 +797,7 @@ pub struct AlarmWorkerArgs {
     pub id: String,
     #[arg(long)]
     pub time: String,
-    #[arg(long, default_value = "Miyu alarm")]
+    #[arg(long, default_value = "Laozhou alarm")]
     pub label: String,
     #[arg(long)]
     pub state_dir: PathBuf,
@@ -988,7 +988,7 @@ pub enum ConfigCommand {
     PromptSource,
 }
 
-pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
+pub async fn run(cli: Cli, paths: LaozhouPaths) -> Result<()> {
     if cli.shell_classify {
         let shell_name = cli.shell.as_deref().unwrap_or("fish");
         let message = shell_message_from_input(cli.stdin, cli.message)?;
@@ -1077,7 +1077,7 @@ pub async fn run(cli: Cli, paths: MiyuPaths) -> Result<()> {
     }
 }
 
-async fn run_tool(paths: &MiyuPaths, mode: AgentMode, args: ToolArgs) -> Result<()> {
+async fn run_tool(paths: &LaozhouPaths, mode: AgentMode, args: ToolArgs) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
     let registry = build_tool_registry(&config, paths, mode, false)?;
     let output = registry
@@ -1093,14 +1093,14 @@ enum InitKind {
     Explicit,
 }
 
-fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> {
+fn run_init(paths: &LaozhouPaths, kind: InitKind) -> Result<()> {
     let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
     if interactive {
         println!(
             "{}\n",
             match kind {
-                InitKind::FirstRun => t("Miyu first start", "Miyu 首次启动"),
-                InitKind::Explicit => t("Miyu initialization", "Miyu 初始化"),
+                InitKind::FirstRun => t("Laozhou first start", "Laozhou 首次启动"),
+                InitKind::Explicit => t("Laozhou initialization", "Laozhou 初始化"),
             }
         );
     }
@@ -1152,7 +1152,7 @@ fn run_init(paths: &MiyuPaths, kind: InitKind) -> Result<()> {
     } else {
         println!(
             "{} {}",
-            t("initialized Miyu at", "Miyu 已初始化于"),
+            t("initialized Laozhou at", "Laozhou 已初始化于"),
             paths.config_dir.display()
         );
     }
@@ -1168,7 +1168,7 @@ fn print_init_step(interactive: bool, label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn prompt_shell_init_menu(paths: &MiyuPaths) -> Result<()> {
+fn prompt_shell_init_menu(paths: &LaozhouPaths) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Ok(());
     }
@@ -1262,7 +1262,7 @@ fn read_shell_menu_key() -> Result<KeyCode> {
     }
 }
 
-fn remove_shell_hooks(paths: &MiyuPaths) -> Result<()> {
+fn remove_shell_hooks(paths: &LaozhouPaths) -> Result<()> {
     let removed = shell::fish::uninstall(paths)?;
     let removed = shell::bash::uninstall(paths)? || removed;
     let removed = shell::zsh::uninstall(paths)? || removed;
@@ -1270,8 +1270,8 @@ fn remove_shell_hooks(paths: &MiyuPaths) -> Result<()> {
         println!(
             "{}",
             t(
-                "no installed Miyu shell hooks found",
-                "未找到已安装的 Miyu shell hook"
+                "no installed Laozhou shell hooks found",
+                "未找到已安装的 Laozhou shell hook"
             )
         );
     }
@@ -1331,7 +1331,7 @@ fn terminal_bell_fallback() {
     }
 }
 
-fn append_alarm_log(paths: &MiyuPaths, line: &str) -> Result<()> {
+fn append_alarm_log(paths: &LaozhouPaths, line: &str) -> Result<()> {
     std::fs::create_dir_all(paths.logs_dir())?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -1341,8 +1341,8 @@ fn append_alarm_log(paths: &MiyuPaths, line: &str) -> Result<()> {
     Ok(())
 }
 
-fn alarm_worker_paths(state_dir: PathBuf, cache_dir: PathBuf) -> MiyuPaths {
-    MiyuPaths {
+fn alarm_worker_paths(state_dir: PathBuf, cache_dir: PathBuf) -> LaozhouPaths {
+    LaozhouPaths {
         config_dir: PathBuf::new(),
         config_file: PathBuf::new(),
         skills_dir: PathBuf::new(),
@@ -1364,7 +1364,7 @@ struct PopOutcome {
     archived: bool,
 }
 
-fn run_pop(paths: &MiyuPaths, args: PopArgs) -> Result<()> {
+fn run_pop(paths: &LaozhouPaths, args: PopArgs) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
     let state = StateStore::new(paths)?;
     state.recover_stale_turns()?;
@@ -1375,7 +1375,7 @@ fn run_pop(paths: &MiyuPaths, args: PopArgs) -> Result<()> {
 }
 
 fn execute_pop(
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &AppConfig,
     state: &StateStore,
     count: Option<usize>,
@@ -1390,8 +1390,8 @@ fn execute_pop(
                 bail!(
                     "{}",
                     t(
-                        "interactive pop requires a terminal; use `miyu pop <count>`",
-                        "交互 pop 需要终端；请使用 `miyu pop <数量>`",
+                        "interactive pop requires a terminal; use `laozhou pop <count>`",
+                        "交互 pop 需要终端；请使用 `laozhou pop <数量>`",
                     )
                 );
             }
@@ -1774,7 +1774,7 @@ fn inline_pop_lines(item_count: usize) -> u16 {
     (visible_items as u16).saturating_mul(3).saturating_add(2)
 }
 
-fn run_models(paths: &MiyuPaths, args: ModelsArgs) -> Result<()> {
+fn run_models(paths: &LaozhouPaths, args: ModelsArgs) -> Result<()> {
     let mut config = AppConfig::load(paths)?;
     let choices = config.text_provider_model_choices();
     if choices.is_empty() {
@@ -2114,7 +2114,7 @@ impl Drop for InlineRawMode {
     }
 }
 
-async fn run_config(paths: &MiyuPaths, args: ConfigArgs) -> Result<()> {
+async fn run_config(paths: &LaozhouPaths, args: ConfigArgs) -> Result<()> {
     match args.command {
         Some(ConfigCommand::Validate) => {
             AppConfig::load(paths)?;
@@ -2181,7 +2181,7 @@ async fn run_config(paths: &MiyuPaths, args: ConfigArgs) -> Result<()> {
     }
 }
 
-fn run_clipboard_paste(paths: &MiyuPaths) -> Result<()> {
+fn run_clipboard_paste(paths: &LaozhouPaths) -> Result<()> {
     match crate::clipboard::read_clipboard() {
         Ok(crate::clipboard::ClipboardContent::Image(img)) => {
             let path = img.write_temp_file(&paths.cache_dir, 0)?;
@@ -2270,7 +2270,7 @@ fn run_shell_classify(shell_name: &str, message: &str) -> Result<()> {
     std::process::exit(1);
 }
 
-async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: String) -> Result<()> {
+async fn run_shell_intercept(paths: &LaozhouPaths, shell_name: &str, message: String) -> Result<()> {
     if !matches!(shell_name, "fish" | "bash" | "zsh") {
         bail!("{}: {shell_name}", t("unsupported shell", "不支持的 shell"));
     }
@@ -2296,7 +2296,7 @@ async fn run_shell_intercept(paths: &MiyuPaths, shell_name: &str, message: Strin
     result
 }
 
-fn expand_shell_pasted_text_placeholders(paths: &MiyuPaths, message: &str) -> Result<String> {
+fn expand_shell_pasted_text_placeholders(paths: &LaozhouPaths, message: &str) -> Result<String> {
     let placeholders = find_pasted_text_placeholders(message);
     if placeholders.is_empty() {
         return Ok(message.to_string());
@@ -2327,7 +2327,7 @@ fn extract_image_placeholders(
         return (message.to_string(), Vec::new());
     }
 
-    let cache_images_dir = MiyuPaths::new()
+    let cache_images_dir = LaozhouPaths::new()
         .map(|p| p.cache_dir.join("clipboard_images"))
         .ok();
 
@@ -2371,7 +2371,7 @@ fn extract_image_placeholders(
 }
 
 async fn run_chat_with_images(
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     message: String,
     pasted_images: Vec<Option<crate::clipboard::PastedImage>>,
 ) -> Result<()> {
@@ -2512,7 +2512,7 @@ async fn append_stdin_if_piped(message: String) -> String {
 }
 
 async fn run_chat_with_options(
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     message: String,
     show_reasoning: Option<bool>,
     plain: bool,
@@ -2705,7 +2705,7 @@ enum VariantOutcome {
     Rejected(String),
 }
 
-fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Result<()> {
+fn run_variant(paths: &LaozhouPaths, args: VariantArgs) -> Result<()> {
     let selected = args
         .name
         .as_deref()
@@ -2715,8 +2715,8 @@ fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Result<()> {
         bail!(
             "{}",
             t(
-                "interactive variant selection requires a terminal; use `miyu variant <name>`",
-                "交互 variant 选择需要终端；请使用 `miyu variant <名称>`",
+                "interactive variant selection requires a terminal; use `laozhou variant <name>`",
+                "交互 variant 选择需要终端；请使用 `laozhou variant <名称>`",
             )
         );
     }
@@ -2731,7 +2731,7 @@ fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Result<()> {
 
     let config = AppConfig::load_or_default(paths)?;
     let mut client = OpenAiCompatibleClient::from_config(&config, paths)?;
-    match execute_variant(paths, &mut client, selected, "miyu variant")? {
+    match execute_variant(paths, &mut client, selected, "laozhou variant")? {
         VariantOutcome::Updated => print_variant_updated(),
         VariantOutcome::Cancelled => {}
         VariantOutcome::Rejected(message) => bail!("{message}"),
@@ -2740,7 +2740,7 @@ fn run_variant(paths: &MiyuPaths, args: VariantArgs) -> Result<()> {
 }
 
 fn execute_variant(
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     client: &mut OpenAiCompatibleClient,
     selected: Option<&str>,
     selector_command: &str,
@@ -2800,7 +2800,7 @@ fn print_variant_updated() {
     println!("{}\n", t("thinking variants updated", "已更新思考档位"));
 }
 
-async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
+async fn run_repl(paths: &LaozhouPaths, initial_mode: AgentMode) -> Result<()> {
     let _cursor_restore = ReplCursorRestore;
     AppConfig::init_files(paths)?;
     let mut config = AppConfig::load_or_default(paths)?;
@@ -3220,7 +3220,7 @@ async fn run_repl(paths: &MiyuPaths, initial_mode: AgentMode) -> Result<()> {
 }
 
 fn reload_repl_config(
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &mut AppConfig,
     client: &mut OpenAiCompatibleClient,
 ) -> Result<()> {
@@ -3859,7 +3859,7 @@ impl LiveReplEditor {
     fn handle_event(
         &mut self,
         event: Event,
-        paths: &MiyuPaths,
+        paths: &LaozhouPaths,
         allow_interrupt: bool,
     ) -> Result<LiveEditorAction> {
         let is_escape = matches!(
@@ -4103,7 +4103,7 @@ impl LiveReplEditor {
         Ok(LiveEditorAction::Redraw)
     }
 
-    fn paste_clipboard(&mut self, paths: &MiyuPaths) -> Result<()> {
+    fn paste_clipboard(&mut self, paths: &LaozhouPaths) -> Result<()> {
         match crate::clipboard::read_clipboard() {
             Ok(crate::clipboard::ClipboardContent::Image(image)) => {
                 let index = self.pasted_images.len() + 1;
@@ -5042,7 +5042,7 @@ impl Drop for LiveRawMode {
 
 fn read_live_repl_input(
     live: &mut LiveReplTail,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
 ) -> Result<
     Option<(
         AgentMode,
@@ -5165,7 +5165,7 @@ fn handle_live_agent_event(
 
 async fn run_live_agent_turn(
     live: &mut LiveReplTail,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     state: &StateStore,
     agent: &mut Agent,
     input: LiveAgentInput<'_>,
@@ -5280,7 +5280,7 @@ async fn run_live_agent_turn(
 }
 
 fn read_repl_input(
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     mut mode: AgentMode,
     prefill: Option<String>,
     history: &[String],
@@ -6729,8 +6729,8 @@ mod repl_input_tests {
         }
     }
 
-    fn pop_test_paths(root: &std::path::Path) -> MiyuPaths {
-        MiyuPaths {
+    fn pop_test_paths(root: &std::path::Path) -> LaozhouPaths {
+        LaozhouPaths {
             config_dir: root.join("config"),
             config_file: root.join("config/config.jsonc"),
             skills_dir: root.join("config/skills"),
@@ -6738,7 +6738,7 @@ mod repl_input_tests {
             cache_dir: root.join("cache"),
             state_dir: root.join("state"),
             pictures_dir: root.join("pictures"),
-            fish_hook_file: root.join("fish/miyu.fish"),
+            fish_hook_file: root.join("fish/laozhou.fish"),
             bash_hook_file: root.join("shell/bash-hook.sh"),
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),
@@ -6798,7 +6798,7 @@ mod repl_input_tests {
     #[test]
     fn models_is_the_cli_model_selector() {
         let matches = localized_command()
-            .try_get_matches_from(["miyu", "models", "1"])
+            .try_get_matches_from(["laozhou", "models", "1"])
             .unwrap();
         let cli = Cli::from_arg_matches(&matches).unwrap();
 
@@ -6807,7 +6807,7 @@ mod repl_input_tests {
             Some(Command::Models(ModelsArgs { index: Some(1) }))
         ));
         let old_matches = localized_command()
-            .try_get_matches_from(["miyu", "providers"])
+            .try_get_matches_from(["laozhou", "providers"])
             .unwrap();
         let old_cli = Cli::from_arg_matches(&old_matches).unwrap();
         assert!(old_cli.command.is_none());
@@ -6816,20 +6816,20 @@ mod repl_input_tests {
 
     #[test]
     fn variant_is_a_cli_subcommand_with_an_optional_name() {
-        let cli = parse_args(["miyu", "variant"].map(OsString::from).to_vec()).unwrap();
+        let cli = parse_args(["laozhou", "variant"].map(OsString::from).to_vec()).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Variant(VariantArgs { name: None }))
         ));
 
-        let cli = parse_args(["miyu", "variant", "high"].map(OsString::from).to_vec()).unwrap();
+        let cli = parse_args(["laozhou", "variant", "high"].map(OsString::from).to_vec()).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Variant(VariantArgs { name })) if name.as_deref() == Some("high")
         ));
 
         assert!(parse_args(
-            ["miyu", "variant", "high", "extra"]
+            ["laozhou", "variant", "high", "extra"]
                 .map(OsString::from)
                 .to_vec()
         )
@@ -6839,7 +6839,7 @@ mod repl_input_tests {
     #[test]
     fn web_is_a_cli_subcommand_with_local_server_options() {
         let cli = parse_args(
-            ["miyu", "web", "--port", "4100", "--no-open"]
+            ["laozhou", "web", "--port", "4100", "--no-open"]
                 .map(OsString::from)
                 .to_vec(),
         )
@@ -6854,7 +6854,7 @@ mod repl_input_tests {
             }))
         ));
 
-        let cli = parse_args(["miyu", "web"].map(OsString::from).to_vec()).unwrap();
+        let cli = parse_args(["laozhou", "web"].map(OsString::from).to_vec()).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Web(WebArgs {
@@ -6866,7 +6866,7 @@ mod repl_input_tests {
         ));
 
         let cli = parse_args(
-            ["miyu", "web", "-p", "secret", "--no-open"]
+            ["laozhou", "web", "-p", "secret", "--no-open"]
                 .map(OsString::from)
                 .to_vec(),
         )
@@ -6881,7 +6881,7 @@ mod repl_input_tests {
         ));
 
         let cli = parse_args(
-            ["miyu", "web", "-p", "--no-open"]
+            ["laozhou", "web", "-p", "--no-open"]
                 .map(OsString::from)
                 .to_vec(),
         )
@@ -6898,19 +6898,19 @@ mod repl_input_tests {
 
     #[test]
     fn pop_is_a_cli_subcommand_with_an_optional_count() {
-        let cli = parse_args(["miyu", "pop"].map(OsString::from).to_vec()).unwrap();
+        let cli = parse_args(["laozhou", "pop"].map(OsString::from).to_vec()).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Pop(PopArgs { count: None }))
         ));
 
-        let cli = parse_args(["miyu", "pop", "3"].map(OsString::from).to_vec()).unwrap();
+        let cli = parse_args(["laozhou", "pop", "3"].map(OsString::from).to_vec()).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Pop(PopArgs { count: Some(3) }))
         ));
-        assert!(parse_args(["miyu", "pop", "0"].map(OsString::from).to_vec()).is_err());
-        assert!(parse_args(["miyu", "pop", "nope"].map(OsString::from).to_vec()).is_err());
+        assert!(parse_args(["laozhou", "pop", "0"].map(OsString::from).to_vec()).is_err());
+        assert!(parse_args(["laozhou", "pop", "nope"].map(OsString::from).to_vec()).is_err());
     }
 
     #[test]
@@ -7008,19 +7008,19 @@ mod repl_input_tests {
     #[test]
     fn debug_is_a_global_cli_option() {
         for args in [
-            &["miyu", "--debug", "models", "1"][..],
-            &["miyu", "models", "--debug", "1"][..],
-            &["miyu", "hello", "--debug"][..],
-            &["miyu", "ask", "hello", "--debug"][..],
+            &["laozhou", "--debug", "models", "1"][..],
+            &["laozhou", "models", "--debug", "1"][..],
+            &["laozhou", "hello", "--debug"][..],
+            &["laozhou", "ask", "hello", "--debug"][..],
         ] {
             let cli = parse_args(args.iter().map(OsString::from).collect()).unwrap();
             assert!(cli.debug);
         }
 
-        let cli = parse_args(["miyu", "hello", "--debug"].map(OsString::from).to_vec()).unwrap();
+        let cli = parse_args(["laozhou", "hello", "--debug"].map(OsString::from).to_vec()).unwrap();
         assert_eq!(cli.message, ["hello"]);
 
-        let cli = parse_args(["miyu", "--", "--debug"].map(OsString::from).to_vec()).unwrap();
+        let cli = parse_args(["laozhou", "--", "--debug"].map(OsString::from).to_vec()).unwrap();
         assert!(!cli.debug);
         assert_eq!(cli.message, ["--debug"]);
     }
@@ -7775,7 +7775,7 @@ mod repl_input_tests {
     #[test]
     fn repl_history_loads_user_messages_from_state() {
         let temp = tempfile::tempdir().unwrap();
-        let paths = MiyuPaths {
+        let paths = LaozhouPaths {
             config_dir: PathBuf::new(),
             config_file: PathBuf::new(),
             skills_dir: PathBuf::new(),
@@ -7801,7 +7801,7 @@ mod repl_input_tests {
     }
 }
 
-fn run_history(paths: &MiyuPaths, args: HistoryArgs) -> Result<()> {
+fn run_history(paths: &LaozhouPaths, args: HistoryArgs) -> Result<()> {
     let state = StateStore::new(paths)?;
     for entry in state.history(args.limit)? {
         if args.raw {
@@ -7837,7 +7837,7 @@ fn run_history(paths: &MiyuPaths, args: HistoryArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_kb(paths: &MiyuPaths, args: KbArgs) -> Result<()> {
+async fn run_kb(paths: &LaozhouPaths, args: KbArgs) -> Result<()> {
     let config = AppConfig::load(paths)?;
     let kb = tools::knowledge_base::KnowledgeBase::new(config, paths.clone())?;
     match args.command {
@@ -7899,7 +7899,7 @@ async fn run_kb(paths: &MiyuPaths, args: KbArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_update_default_kb(paths: &MiyuPaths) -> Result<()> {
+async fn run_update_default_kb(paths: &LaozhouPaths) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
     let state = crate::default_kb::update(paths, &config)?;
     println!(
@@ -7910,7 +7910,7 @@ async fn run_update_default_kb(paths: &MiyuPaths) -> Result<()> {
     Ok(())
 }
 
-fn run_memory(paths: &MiyuPaths, args: MemoryArgs) -> Result<()> {
+fn run_memory(paths: &LaozhouPaths, args: MemoryArgs) -> Result<()> {
     let config = AppConfig::load_or_default(paths)?;
     let store = MemoryStore::new(&config, paths);
     match args.command {
@@ -7933,7 +7933,7 @@ fn run_memory(paths: &MiyuPaths, args: MemoryArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_skills(paths: &MiyuPaths, args: SkillsArgs) -> Result<()> {
+fn run_skills(paths: &LaozhouPaths, args: SkillsArgs) -> Result<()> {
     std::fs::create_dir_all(&paths.skills_dir)?;
     match args.command {
         SkillsCommand::List => {
@@ -7993,7 +7993,7 @@ fn run_skills(paths: &MiyuPaths, args: SkillsArgs) -> Result<()> {
             for name in skill_names(paths)? {
                 let dir = paths.skills_dir.join(&name);
                 let raw = std::fs::read_to_string(dir.join("SKILL.md")).unwrap_or_default();
-                if raw.contains("generated_by: miyu") && dir.join(".disabled").exists() {
+                if raw.contains("generated_by: laozhou") && dir.join(".disabled").exists() {
                     std::fs::remove_dir_all(dir)?;
                     removed += 1;
                 }
@@ -8004,7 +8004,7 @@ fn run_skills(paths: &MiyuPaths, args: SkillsArgs) -> Result<()> {
     Ok(())
 }
 
-fn skill_names(paths: &MiyuPaths) -> Result<Vec<String>> {
+fn skill_names(paths: &LaozhouPaths) -> Result<Vec<String>> {
     let mut names = Vec::new();
     if !paths.skills_dir.exists() {
         return Ok(names);
@@ -8019,7 +8019,7 @@ fn skill_names(paths: &MiyuPaths) -> Result<Vec<String>> {
     Ok(names)
 }
 
-fn skill_dir(paths: &MiyuPaths, name: &str) -> Result<PathBuf> {
+fn skill_dir(paths: &LaozhouPaths, name: &str) -> Result<PathBuf> {
     let clean = name.trim();
     if clean.is_empty()
         || clean.contains('/')
@@ -8036,7 +8036,7 @@ fn skill_dir(paths: &MiyuPaths, name: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-fn run_reset(paths: &MiyuPaths, scope: Option<&str>) -> Result<()> {
+fn run_reset(paths: &LaozhouPaths, scope: Option<&str>) -> Result<()> {
     let all = match scope {
         None => false,
         Some("all") => true,
@@ -8070,7 +8070,7 @@ fn join_message(parts: Vec<String>) -> String {
 
 pub(crate) fn build_tool_registry(
     config: &AppConfig,
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     mode: AgentMode,
     interactive_questions: bool,
 ) -> Result<tools::ToolRegistry> {

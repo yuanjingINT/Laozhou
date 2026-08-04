@@ -1,5 +1,5 @@
 use super::{ToolRegistry, ToolSpec};
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
@@ -8,7 +8,7 @@ const ARCH_STATUS_PAGE_ID: &str = "vmM5ruWEAB";
 const ARCH_NEWS_FEED_URL: &str = "https://archlinux.org/feeds/news/";
 const ARCH_NEWS_CACHE_FILE: &str = "arch_news_last_seen.json";
 
-pub fn register(registry: &mut ToolRegistry, paths: &MiyuPaths) {
+pub fn register(registry: &mut ToolRegistry, paths: &LaozhouPaths) {
     registry.register(ToolSpec::new("aur_search_packages", "Search AUR packages via official RPC.", json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"},"search_by":{"type":"string"}},"required":["query"],"additionalProperties":false}), |args| async move { aur_search(args).await }));
     registry.register(ToolSpec::new("aur_get_package_info", "Get AUR package information via official RPC.", json!({"type":"object","properties":{"package_name":{"type":"string"}},"required":["package_name"],"additionalProperties":false}), |args| async move { aur_info(args).await }));
     registry.register(ToolSpec::new("archlinux_official_package_query", "查询 Arch Linux 官方软件包数据库，支持搜索和精确包详情。", json!({"type":"object","properties":{"package_name":{"type":"string","description":"包名。"},"repo":{"type":"string","description":"详情模式的仓库，例如 core 或 extra。"},"arch":{"type":"string","description":"详情模式架构，默认 x86_64。"},"mode":{"type":"string","enum":["auto","search","detail"],"description":"auto 在提供 repo 时查详情，否则搜索。"}},"required":["package_name"],"additionalProperties":false}), |args| async move { official_package_query(args).await }));
@@ -81,7 +81,7 @@ async fn official_package_query(args: Value) -> Result<String> {
     };
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .user_agent("miyu-archlinux-official-package-query/0.1")
+        .user_agent("laozhou-archlinux-official-package-query/0.1")
         .build()?;
     let resp = client.get(&url).send().await?;
     let status = resp.status();
@@ -182,7 +182,7 @@ async fn aur_info(args: Value) -> Result<String> {
 async fn arch_status() -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
-        .user_agent("miyu-arch-status/0.1")
+        .user_agent("laozhou-arch-status/0.1")
         .build()?;
 
     let event_url = format!(
@@ -562,7 +562,7 @@ async fn archlinux_news(args: Value, state_dir: &std::path::Path) -> Result<Stri
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .user_agent("miyu-archlinux-news/0.1")
+        .user_agent("laozhou-archlinux-news/0.1")
         .build()?;
     let resp = client.get(ARCH_NEWS_FEED_URL).send().await?;
     if !resp.status().is_success() {

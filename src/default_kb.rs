@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::i18n::text as t;
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use crate::tools::knowledge_base::KnowledgeBase;
 use anyhow::{bail, Result};
 use chrono::Utc;
@@ -28,7 +28,7 @@ pub struct DefaultKbStatus {
     pub has_update_notice: bool,
 }
 
-pub fn ensure_initialized(paths: &MiyuPaths, config: &AppConfig) -> Result<()> {
+pub fn ensure_initialized(paths: &LaozhouPaths, config: &AppConfig) -> Result<()> {
     let source = default_kb_source_dir();
     if !source.is_dir() {
         return Ok(());
@@ -45,7 +45,7 @@ pub fn bundled_available() -> bool {
     default_kb_source_dir().is_dir()
 }
 
-pub fn status(paths: &MiyuPaths) -> Result<DefaultKbStatus> {
+pub fn status(paths: &LaozhouPaths) -> Result<DefaultKbStatus> {
     let state = load_state(paths)?;
     Ok(DefaultKbStatus {
         has_update_notice: state.update_available
@@ -54,7 +54,7 @@ pub fn status(paths: &MiyuPaths) -> Result<DefaultKbStatus> {
     })
 }
 
-pub fn notice_if_update_available(paths: &MiyuPaths) -> Result<Option<String>> {
+pub fn notice_if_update_available(paths: &LaozhouPaths) -> Result<Option<String>> {
     let mut state = load_state(paths)?;
     if !state.update_available || state.remote_commit.is_empty() {
         return Ok(None);
@@ -63,8 +63,8 @@ pub fn notice_if_update_available(paths: &MiyuPaths) -> Result<Option<String>> {
         return Ok(None);
     }
     let message = t(
-        "The default knowledge base needs an update; run miyu update-default-kb",
-        "默认知识库需要更新，运行 miyu update-default-kb",
+        "The default knowledge base needs an update; run laozhou update-default-kb",
+        "默认知识库需要更新，运行 laozhou update-default-kb",
     )
     .to_string();
     state.last_notice_commit = state.remote_commit.clone();
@@ -72,7 +72,7 @@ pub fn notice_if_update_available(paths: &MiyuPaths) -> Result<Option<String>> {
     Ok(Some(message))
 }
 
-pub fn check_update_if_due(paths: &MiyuPaths) -> Result<()> {
+pub fn check_update_if_due(paths: &LaozhouPaths) -> Result<()> {
     let mut state = load_state(paths)?;
     if !should_check(&state) {
         return Ok(());
@@ -86,7 +86,7 @@ pub fn check_update_if_due(paths: &MiyuPaths) -> Result<()> {
     save_state(paths, &state)
 }
 
-pub fn update(paths: &MiyuPaths, config: &AppConfig) -> Result<DefaultKbState> {
+pub fn update(paths: &LaozhouPaths, config: &AppConfig) -> Result<DefaultKbState> {
     let git = git_command()?;
     let repo = update_repo_dir(paths);
     cleanup_legacy_update_repo(paths, &repo)?;
@@ -143,7 +143,7 @@ pub fn update(paths: &MiyuPaths, config: &AppConfig) -> Result<DefaultKbState> {
 }
 
 fn import_snapshot(
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
     config: &AppConfig,
     source: &Path,
     release_hash: &str,
@@ -158,30 +158,30 @@ fn import_snapshot(
 }
 
 fn default_kb_source_dir() -> PathBuf {
-    std::env::var_os("MIYU_DEFAULT_KB_DIR")
+    std::env::var_os("LAOZHOU_DEFAULT_KB_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/usr/share/miyu/default-kb"))
+        .unwrap_or_else(|| PathBuf::from("/usr/share/laozhou/default-kb"))
 }
 
-fn state_file(paths: &MiyuPaths) -> PathBuf {
+fn state_file(paths: &LaozhouPaths) -> PathBuf {
     paths.data_dir.join("default-kb/state.json")
 }
 
-fn update_repo_dir(paths: &MiyuPaths) -> PathBuf {
+fn update_repo_dir(paths: &LaozhouPaths) -> PathBuf {
     paths
         .cache_dir
         .join("default-kb/shorin-archlinux-guide.git")
 }
 
-fn legacy_update_repo_dir(paths: &MiyuPaths) -> PathBuf {
+fn legacy_update_repo_dir(paths: &LaozhouPaths) -> PathBuf {
     paths.cache_dir.join("default-kb/shorinwiki.git")
 }
 
-fn update_source_dir(paths: &MiyuPaths) -> PathBuf {
+fn update_source_dir(paths: &LaozhouPaths) -> PathBuf {
     paths.cache_dir.join("default-kb/update-source")
 }
 
-fn cleanup_legacy_update_repo(paths: &MiyuPaths, repo: &Path) -> Result<()> {
+fn cleanup_legacy_update_repo(paths: &LaozhouPaths, repo: &Path) -> Result<()> {
     let legacy = legacy_update_repo_dir(paths);
     if legacy == repo || !legacy.exists() {
         return Ok(());
@@ -192,7 +192,7 @@ fn cleanup_legacy_update_repo(paths: &MiyuPaths, repo: &Path) -> Result<()> {
     Ok(())
 }
 
-fn load_state(paths: &MiyuPaths) -> Result<DefaultKbState> {
+fn load_state(paths: &LaozhouPaths) -> Result<DefaultKbState> {
     let path = state_file(paths);
     if !path.is_file() {
         return Ok(DefaultKbState::default());
@@ -200,7 +200,7 @@ fn load_state(paths: &MiyuPaths) -> Result<DefaultKbState> {
     Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
 }
 
-fn save_state(paths: &MiyuPaths, state: &DefaultKbState) -> Result<()> {
+fn save_state(paths: &LaozhouPaths, state: &DefaultKbState) -> Result<()> {
     let path = state_file(paths);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -272,7 +272,7 @@ fn git_output(git: &str, cwd: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
-fn build_update_source(paths: &MiyuPaths, repo: &Path) -> Result<PathBuf> {
+fn build_update_source(paths: &LaozhouPaths, repo: &Path) -> Result<PathBuf> {
     let dest = update_source_dir(paths);
     if dest.exists() {
         std::fs::remove_dir_all(&dest)?;

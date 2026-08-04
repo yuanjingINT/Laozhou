@@ -1,6 +1,6 @@
-# Miyu WebUI assets
+# Laozhou WebUI assets
 
-These static assets are embedded into the Miyu Rust binary at build time. Run the local WebUI with:
+These static assets are embedded into the Laozhou Rust binary at build time. Run the local WebUI with:
 
 ```sh
 cargo run -- web

@@ -3,7 +3,7 @@ tuigreet是极速，基于greetd的纯tty tui显示管理器（如果进入tuigr
 1. 安装
 
     ```
-    suod pacman -S --noconfirm --needed greetd greetd-tuigreet
+    sudo pacman -S --noconfirm --needed greetd greetd-tuigreet
     ```
 
 2. 简单配置

@@ -5,7 +5,7 @@ use crate::i18n::{is_zh, text as t};
 use crate::llm::{
     ChatMessage, ChatResult, ChatStreamChunk, ChatStreamKind, OpenAiCompatibleClient, Usage,
 };
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -15,7 +15,7 @@ const INPUT_METHOD_DIAGNOSIS_PROMPT: &str = crate::prompts::INPUT_METHOD_DIAGNOS
 #[derive(Clone)]
 struct DiagnosisContext {
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: LaozhouPaths,
     tools: ToolRegistry,
 }
 
@@ -167,7 +167,7 @@ fn estimate_tokens(texts: &[&str]) -> u64 {
 pub fn register(
     registry: &mut ToolRegistry,
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: LaozhouPaths,
     tools: ToolRegistry,
 ) {
     let context = DiagnosisContext {

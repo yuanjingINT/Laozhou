@@ -43,7 +43,7 @@ mod xuanxue;
 
 use crate::config::AppConfig;
 use crate::i18n::{is_zh, text as t};
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -248,11 +248,11 @@ fn builtin_readable_group_name(group: &str) -> Option<&'static str> {
     })
 }
 
-pub fn clear_aur_review_state(paths: &MiyuPaths) -> anyhow::Result<()> {
+pub fn clear_aur_review_state(paths: &LaozhouPaths) -> anyhow::Result<()> {
     package_advisor::clear_aur_review_state(paths)
 }
 
-pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+pub fn builtin_registry(config: &AppConfig, paths: &LaozhouPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     default_tools::register(&mut registry, true);
     apply_patch::register(&mut registry);
@@ -339,7 +339,7 @@ pub fn builtin_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
     registry
 }
 
-pub fn readonly_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+pub fn readonly_registry(config: &AppConfig, paths: &LaozhouPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     default_tools::register_readonly(&mut registry);
     clipboard::register(&mut registry, paths.clone());
@@ -395,7 +395,7 @@ pub fn is_hybrid_loading_mode(mode: &str) -> bool {
     matches!(mode.trim(), "hybrid" | "lazy")
 }
 
-pub fn chat_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
+pub fn chat_registry(config: &AppConfig, paths: &LaozhouPaths) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     web::register_fetch(&mut registry);
     if config.plugins.web.enabled {
@@ -414,8 +414,8 @@ pub fn chat_registry(config: &AppConfig, paths: &MiyuPaths) -> ToolRegistry {
 mod tests {
     use super::*;
 
-    fn test_paths(root: &std::path::Path) -> MiyuPaths {
-        MiyuPaths {
+    fn test_paths(root: &std::path::Path) -> LaozhouPaths {
+        LaozhouPaths {
             config_dir: root.join("config"),
             config_file: root.join("config/config.jsonc"),
             skills_dir: root.join("config/skills"),
@@ -423,7 +423,7 @@ mod tests {
             cache_dir: root.join("cache"),
             state_dir: root.join("state"),
             pictures_dir: root.join("pictures"),
-            fish_hook_file: root.join("config/fish/conf.d/miyu.fish"),
+            fish_hook_file: root.join("config/fish/conf.d/laozhou.fish"),
             bash_hook_file: root.join("config/shell/bash-hook.sh"),
             zsh_hook_file: root.join("config/shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),

@@ -9,7 +9,7 @@ use crate::llm::{
     ImageUrlContent, OpenAiCompatibleClient, Usage,
 };
 use crate::memory::{EvictedTurn, MemoryStore};
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use crate::question::{
     answered_tool_output, unavailable_tool_output, QuestionCancelled, QuestionExchange,
     QuestionRequest, QuestionResponse,
@@ -264,7 +264,7 @@ pub struct Agent {
     memory: MemoryStore,
     mode: AgentMode,
     config: AppConfig,
-    paths: MiyuPaths,
+    paths: LaozhouPaths,
     on_overflow: String,
 }
 
@@ -277,7 +277,7 @@ struct PreparedUserInput {
 impl Agent {
     pub fn new(
         config: AppConfig,
-        paths: &MiyuPaths,
+        paths: &LaozhouPaths,
         state: StateStore,
         client: OpenAiCompatibleClient,
         tools: ToolRegistry,
@@ -2105,7 +2105,7 @@ fn clipboard_binary_image_from_tool_result(
 
 fn resolve_pasted_image_paths(
     images: &[Option<PastedImage>],
-    paths: &MiyuPaths,
+    paths: &LaozhouPaths,
 ) -> Vec<Option<String>> {
     images
         .iter()
@@ -2495,7 +2495,7 @@ fn strip_tagged_sections(mut text: String, tag: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{AppConfig, ProviderConfig};
-    use crate::paths::MiyuPaths;
+    use crate::paths::LaozhouPaths;
     use crate::tools::{empty_parameters, ToolSpec};
     use std::path::PathBuf;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3604,8 +3604,8 @@ mod tests {
         config
     }
 
-    fn test_paths(root: &std::path::Path) -> MiyuPaths {
-        MiyuPaths {
+    fn test_paths(root: &std::path::Path) -> LaozhouPaths {
+        LaozhouPaths {
             config_dir: root.join("config"),
             config_file: root.join("config/config.jsonc"),
             skills_dir: root.join("config/skills"),
@@ -3613,7 +3613,7 @@ mod tests {
             cache_dir: root.join("cache"),
             state_dir: root.join("state"),
             pictures_dir: root.join("pictures"),
-            fish_hook_file: root.join("fish/miyu.fish"),
+            fish_hook_file: root.join("fish/laozhou.fish"),
             bash_hook_file: root.join("shell/bash-hook.sh"),
             zsh_hook_file: root.join("shell/zsh-hook.zsh"),
             scripts_dir: root.join("config/scripts"),

@@ -53,7 +53,7 @@ async fn protondb_query(args: Value) -> Result<String> {
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("miyu-protondb-query/0.1")
+        .user_agent("laozhou-protondb-query/0.1")
         .build()?;
 
     // Resolve app_id: numeric → direct, otherwise search via Algolia

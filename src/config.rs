@@ -2,7 +2,7 @@ use crate::default_models::{
     OPENCODE_DEFAULT_CHAT_MODEL, OPENCODE_DEFAULT_CONTEXT_WINDOW, OPENCODE_DEFAULT_VISION_MODEL,
     OPENCODE_PROVIDER_ID, OPENCODE_ZEN_BASE_URL,
 };
-use crate::paths::MiyuPaths;
+use crate::paths::LaozhouPaths;
 use crate::prompts::default_system_prompt;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -811,7 +811,7 @@ impl MemesPluginConfig {
                 .persona_libraries
                 .get("default")
                 .cloned()
-                .unwrap_or_else(|| "miyu".to_string());
+                .unwrap_or_else(|| "laozhou".to_string());
         }
         let persona = persona_scope_name(persona);
         self.persona_libraries
@@ -1035,7 +1035,7 @@ impl ProviderConfig {
         crate::models_cache::input_modalities(&self.id, model)
     }
 
-    pub fn resolved_api_keys(&self, _paths: &MiyuPaths) -> Result<Vec<ResolvedProviderKey>> {
+    pub fn resolved_api_keys(&self, _paths: &LaozhouPaths) -> Result<Vec<ResolvedProviderKey>> {
         let mut keys = Vec::new();
         if let Some(api_key) = self.api_key.as_deref() {
             append_resolved_api_keys(&mut keys, api_key)?;
@@ -1113,7 +1113,7 @@ fn active_model_exists(providers: &[ProviderConfig], active: &ActiveProviderMode
 }
 
 impl AppConfig {
-    pub fn display_language_hint(paths: &MiyuPaths) -> Option<String> {
+    pub fn display_language_hint(paths: &LaozhouPaths) -> Option<String> {
         let raw = std::fs::read_to_string(&paths.config_file).ok()?;
         let stripped = json_comments::StripComments::new(raw.as_bytes());
         let value: serde_json::Value = serde_json::from_reader(stripped).ok()?;
@@ -1132,7 +1132,7 @@ impl AppConfig {
         }
     }
 
-    pub fn load(paths: &MiyuPaths) -> Result<Self> {
+    pub fn load(paths: &LaozhouPaths) -> Result<Self> {
         let raw = std::fs::read_to_string(&paths.config_file)
             .with_context(|| format!("failed to read {}", paths.config_file.display()))?;
         let stripped = json_comments::StripComments::new(raw.as_bytes());
@@ -1143,7 +1143,7 @@ impl AppConfig {
         Ok(config)
     }
 
-    pub fn load_or_default(paths: &MiyuPaths) -> Result<Self> {
+    pub fn load_or_default(paths: &LaozhouPaths) -> Result<Self> {
         if paths.config_file.exists() {
             Self::load(paths)
         } else {
@@ -1151,7 +1151,7 @@ impl AppConfig {
         }
     }
 
-    pub fn init_files(paths: &MiyuPaths) -> Result<()> {
+    pub fn init_files(paths: &LaozhouPaths) -> Result<()> {
         paths.create_dirs()?;
         if !paths.config_file.exists() {
             Self::default().save(paths)?;
@@ -1159,7 +1159,7 @@ impl AppConfig {
         Ok(())
     }
 
-    pub fn save(&self, paths: &MiyuPaths) -> Result<()> {
+    pub fn save(&self, paths: &LaozhouPaths) -> Result<()> {
         paths.create_dirs()?;
         let mut config = self.clone();
         let effective_memory = config.memory_config().clone();
@@ -1766,7 +1766,7 @@ impl AppConfig {
             .or_else(|| default_context_window_for_provider_model(provider, model)))
     }
 
-    pub fn system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
+    pub fn system_prompt(&self, paths: &LaozhouPaths) -> Result<String> {
         let mut prompt = self.base_system_prompt(paths)?;
         let user_identity = self.user_identity_prompt(paths)?;
         if !user_identity.trim().is_empty() {
@@ -1778,7 +1778,7 @@ impl AppConfig {
         Ok(prompt)
     }
 
-    pub fn base_system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
+    pub fn base_system_prompt(&self, paths: &LaozhouPaths) -> Result<String> {
         let persona = self.active_persona_prompt(paths)?;
         if persona.trim().is_empty() {
             Ok(default_system_prompt())
@@ -1787,7 +1787,7 @@ impl AppConfig {
         }
     }
 
-    pub fn custom_system_prompt(&self, paths: &MiyuPaths) -> Result<String> {
+    pub fn custom_system_prompt(&self, paths: &LaozhouPaths) -> Result<String> {
         if let Some(prompt) = self
             .system_prompt
             .as_deref()
@@ -1802,60 +1802,60 @@ impl AppConfig {
         Ok(String::new())
     }
 
-    pub fn prompts_dir_path(&self, paths: &MiyuPaths) -> PathBuf {
+    pub fn prompts_dir_path(&self, paths: &LaozhouPaths) -> PathBuf {
         config_relative_path(paths, &self.prompt.prompts_dir)
     }
 
-    pub fn user_identity_path(&self, paths: &MiyuPaths) -> PathBuf {
+    pub fn user_identity_path(&self, paths: &LaozhouPaths) -> PathBuf {
         config_relative_path(paths, &self.prompt.user_identity_file)
     }
 
-    pub fn identities_dir_path(&self, paths: &MiyuPaths) -> PathBuf {
+    pub fn identities_dir_path(&self, paths: &LaozhouPaths) -> PathBuf {
         config_relative_path(paths, &self.prompt.identities_dir)
     }
 
-    pub fn persona_path(&self, paths: &MiyuPaths, name: &str) -> PathBuf {
+    pub fn persona_path(&self, paths: &LaozhouPaths, name: &str) -> PathBuf {
         self.prompts_dir_path(paths).join(name)
     }
 
-    pub fn identity_path(&self, paths: &MiyuPaths, name: &str) -> PathBuf {
+    pub fn identity_path(&self, paths: &LaozhouPaths, name: &str) -> PathBuf {
         self.identities_dir_path(paths).join(name)
     }
 
-    pub fn persona_memory_data_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
+    pub fn persona_memory_data_dir(&self, paths: &LaozhouPaths, persona: &str) -> PathBuf {
         paths
             .data_dir
             .join("personas")
             .join(persona_scope_name(persona))
     }
 
-    pub fn persona_memory_state_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
+    pub fn persona_memory_state_dir(&self, paths: &LaozhouPaths, persona: &str) -> PathBuf {
         paths
             .state_dir
             .join("personas")
             .join(persona_scope_name(persona))
     }
 
-    pub fn persona_skills_dir(&self, paths: &MiyuPaths, persona: &str) -> PathBuf {
+    pub fn persona_skills_dir(&self, paths: &LaozhouPaths, persona: &str) -> PathBuf {
         paths
             .skills_dir
             .join("personas")
             .join(persona_scope_name(persona))
     }
 
-    pub fn active_persona_memory_data_dir(&self, paths: &MiyuPaths) -> PathBuf {
+    pub fn active_persona_memory_data_dir(&self, paths: &LaozhouPaths) -> PathBuf {
         self.persona_memory_data_dir(paths, self.prompt.active_persona.trim())
     }
 
-    pub fn active_persona_memory_state_dir(&self, paths: &MiyuPaths) -> PathBuf {
+    pub fn active_persona_memory_state_dir(&self, paths: &LaozhouPaths) -> PathBuf {
         self.persona_memory_state_dir(paths, self.prompt.active_persona.trim())
     }
 
-    pub fn active_persona_skills_dir(&self, paths: &MiyuPaths) -> PathBuf {
+    pub fn active_persona_skills_dir(&self, paths: &LaozhouPaths) -> PathBuf {
         self.persona_skills_dir(paths, self.prompt.active_persona.trim())
     }
 
-    pub fn active_persona_prompt(&self, paths: &MiyuPaths) -> Result<String> {
+    pub fn active_persona_prompt(&self, paths: &LaozhouPaths) -> Result<String> {
         if !self.prompt.active_persona.trim().is_empty() {
             let path = self.persona_path(paths, self.prompt.active_persona.trim());
             if path.exists() {
@@ -1878,7 +1878,7 @@ impl AppConfig {
         }
     }
 
-    pub fn user_identity_prompt(&self, paths: &MiyuPaths) -> Result<String> {
+    pub fn user_identity_prompt(&self, paths: &LaozhouPaths) -> Result<String> {
         if !self.prompt.active_identity.trim().is_empty() {
             let path = self.identity_path(paths, self.prompt.active_identity.trim());
             if path.exists() {
@@ -1894,7 +1894,7 @@ impl AppConfig {
         Ok(String::new())
     }
 
-    pub fn system_prompt_path(&self, paths: &MiyuPaths) -> PathBuf {
+    pub fn system_prompt_path(&self, paths: &LaozhouPaths) -> PathBuf {
         let value = self
             .system_prompt_file
             .as_deref()
@@ -1953,7 +1953,7 @@ fn default_user_identity_file() -> String {
     "user-identity.md".to_string()
 }
 
-fn config_relative_path(paths: &MiyuPaths, value: &str) -> PathBuf {
+fn config_relative_path(paths: &LaozhouPaths, value: &str) -> PathBuf {
     let path = PathBuf::from(value.trim());
     if path.is_absolute() {
         path
@@ -2157,10 +2157,10 @@ fn default_web_images_timeout() -> u64 {
 fn default_deep_research_dir() -> String {
     if let Some(dirs) = directories::UserDirs::new() {
         if let Some(documents) = dirs.document_dir() {
-            return documents.join("Miyu/deep-thinking").display().to_string();
+            return documents.join("Laozhou/deep-thinking").display().to_string();
         }
     }
-    "~/Documents/Miyu/deep-thinking".to_string()
+    "~/Documents/Laozhou/deep-thinking".to_string()
 }
 
 fn default_deep_research_depth() -> String {
@@ -2206,10 +2206,10 @@ fn default_image_generation_resolution() -> String {
 fn default_image_generation_output_dir() -> String {
     if let Some(dirs) = directories::UserDirs::new() {
         if let Some(pictures) = dirs.picture_dir() {
-            return pictures.join("miyu/generated-images").display().to_string();
+            return pictures.join("laozhou/generated-images").display().to_string();
         }
     }
-    "~/Pictures/miyu/generated-images".to_string()
+    "~/Pictures/laozhou/generated-images".to_string()
 }
 
 fn default_image_generation_timeout() -> u64 {
@@ -2520,8 +2520,8 @@ mod tests {
         let provider = &mut config.providers[0];
         let provider_id = provider.id.clone();
         provider.models = vec![
-            "miyu-known-window-model".to_string(),
-            "miyu-unknown-window-model".to_string(),
+            "laozhou-known-window-model".to_string(),
+            "laozhou-unknown-window-model".to_string(),
         ];
         provider.default_model = provider.models[0].clone();
         provider
@@ -2541,7 +2541,7 @@ mod tests {
         assert_eq!(config.active_context_window().unwrap(), None);
         config.providers[0]
             .model_context_window
-            .insert("miyu-unknown-window-model".to_string(), 128_000);
+            .insert("laozhou-unknown-window-model".to_string(), 128_000);
         assert_eq!(config.active_context_window().unwrap(), Some(128_000));
     }
 
@@ -2683,7 +2683,7 @@ mod tests {
             "{\n  // UI preference\n  \"display\": { \"language\": \"en\" }\n}\n",
         )
         .unwrap();
-        let paths = MiyuPaths {
+        let paths = LaozhouPaths {
             config_dir: temp.path().to_path_buf(),
             config_file,
             skills_dir: temp.path().join("skills"),
@@ -2691,9 +2691,9 @@ mod tests {
             cache_dir: temp.path().join("cache"),
             state_dir: temp.path().join("state"),
             pictures_dir: temp.path().join("pictures"),
-            fish_hook_file: temp.path().join("miyu.fish"),
-            bash_hook_file: temp.path().join("miyu.bash"),
-            zsh_hook_file: temp.path().join("miyu.zsh"),
+            fish_hook_file: temp.path().join("laozhou.fish"),
+            bash_hook_file: temp.path().join("laozhou.bash"),
+            zsh_hook_file: temp.path().join("laozhou.zsh"),
             scripts_dir: temp.path().join("scripts"),
             system_scripts_dir: temp.path().join("system-scripts"),
         };
@@ -2707,7 +2707,7 @@ mod tests {
     #[test]
     fn meme_library_defaults_follow_persona() {
         let memes = MemesPluginConfig::default();
-        assert_eq!(memes.library_for_persona(""), "miyu");
+        assert_eq!(memes.library_for_persona(""), "laozhou");
         assert_eq!(
             memes.library_for_persona("Custom Persona"),
             "custom-persona"
