@@ -34,8 +34,10 @@ laozhou config
 
 - Arch Linux
 
+  从 [Releases](https://github.com/yuanjingINT/Laozhou/releases) 下载 `laozhou-*.pkg.tar.zst`，然后：
+
   ```
-  yay -S laozhou
+  sudo pacman -U laozhou-*.pkg.tar.zst
   ```
 
 - 从源码构建
@@ -43,7 +45,7 @@ laozhou config
   需要安装 Rust 1.96 或更新版本、C 编译工具链、`pkg-config` 和 ALSA 开发库，图片显示功能依赖 `chafa`。Arch Linux、Fedora 和 Ubuntu 24.04 均已验证可构建。
 
   ```
-  git clone https://github.com/SHORiN-KiWATA/Laozhou.git
+  git clone https://github.com/yuanjingINT/Laozhou.git
   cd Laozhou
   cargo build --release --locked
   ./target/release/laozhou --version
@@ -64,6 +66,25 @@ laozhou config
   . "$HOME/.cargo/env"
   ```
 
+### 如何卸载？
+
+- Arch Linux（pacman 安装）
+
+  ```
+  sudo pacman -Rns laozhou
+  ```
+
+- 源码构建
+
+  直接删除二进制和用户数据目录：
+
+  ```
+  rm -f ~/.local/bin/laozhou
+  rm -rf ~/.config/laozhou ~/.local/share/laozhou
+  ```
+
+  >注意：`~/.local/share/laozhou/kb` 下是你的知识库数据，删了就没了，删之前先备份。
+
 ### 界面语言
 
 Laozhou 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文。在 `laozhou config` 的"全局设置 / Global Settings"中可将"界面语言 / Interface language"设为：
@@ -73,6 +94,74 @@ Laozhou 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文�
 - `zh`：简体中文
 
 `LAOZHOU_LANG=en` 或 `LAOZHOU_LANG=zh` 可以临时覆盖配置。语言选择优先级为 `LAOZHOU_LANG`、`display.language`、系统 locale；在配置 TUI 中保存后，下次启动 Laozhou 时生效。
+
+### 快速开始
+
+1. **初始化配置**
+
+  安装后首次运行，老周会自动生成默认配置：
+
+  ```
+  laozhou
+  ```
+
+  或手动初始化：
+
+  ```
+  laozhou init
+  ```
+
+2. **配置模型服务**
+
+  默认使用 [opencode](https://github.com/anomalyco/opencode) 公共模型服务，开箱即用。如需使用自己的 API（OpenAI、DeepSeek、本地 Ollama 等）：
+
+  ```
+  laozhou config
+  ```
+
+  在 TUI 中配置 Provider 和模型即可。
+
+3. **集成终端**（可选但强烈推荐）
+
+  让老周住进你的 shell，敲命令时自然语言直接转化：
+
+  ```
+  # bash
+  laozhou bash-init >> ~/.bashrc
+
+  # zsh
+  laozhou zsh-init >> ~/.zshrc
+
+  # fish
+  laozhou fish-init > ~/.config/fish/conf.d/laozhou.fish
+  ```
+
+  重开终端后，直接在终端里说话就能触发老周。
+
+4. **开始对话**
+
+  ```
+  # 单次问答
+  laozhou ask "N卡怎么装驱动"
+
+  # 进入 REPL
+  laozhou
+
+  # 查看所有命令
+  laozhou --help
+  ```
+
+### 配置文件位置
+
+| 用途 | 路径 |
+| --- | --- |
+| 主配置 | `~/.config/laozhou/config.json` |
+| 知识库数据 | `~/.local/share/laozhou/kb/` |
+| 知识库元数据 | `~/.local/share/laozhou/kb_meta.db` |
+| 语义索引 | `~/.local/share/laozhou/semantic_index.db` |
+| 表情包 | `~/.local/share/laozhou/memes/` |
+| 日志 | `~/.local/share/laozhou/logs/` |
+| Shell Hook | `~/.config/laozhou/shell/` |
 
 ### 内置插件
 
@@ -120,6 +209,8 @@ Laozhou 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文�
   当然，你也可以通过 `laozhou kb` 命令，或者通过跟 AI 的自然语言交互管理属于你自己的知识库。
 
   ![](./pics/kb.png)
+
+  >**搜索结果自动入库**：当老周通过网络搜索找到有价值的技术方案时，会主动询问你是否保存到知识库。保存时会自动整理成结构化的 Markdown（标题、问题描述、解决方案、命令、踩坑点、来源链接），方便后续检索复用。
 
 - ProtonDB 查询
 
@@ -236,6 +327,58 @@ Laozhou 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文�
 - Fcitx5 wiki 查询
 
   阅读 Fcitx5 wiki，为输入法问题提供参考。
+
+</details>
+
+## 使用示例
+
+```bash
+# 让老周帮你装软件
+$ 装个wps
+→ 正在搜索 AUR... 找到 wps-office-cn
+→ 审查 PKGBUILD...
+→ 🟢 安全，可以装
+yay -S wps-office-cn
+
+# 排障
+$ laozhou ask "Wayland下微信没法输入中文"
+→ 老周会从知识库召回相关条目，给出 fcitx5 环境变量配置方案
+
+# 查游戏兼容性
+$ laozhou ask "赛博朋克2077 Linux能玩吗"
+→ 老周会查 ProtonDB、AreWeAntiCheatYet，给出 🟢/🟡/🔴 评级和注意事项
+
+# 深度研究
+$ laozhou ask "对比下 Hyprland 和 Niri"
+→ 老周会引经据典，写出有理有据的对比报告
+```
+
+## 常见问题
+
+<details><summary>[展开/收起]</summary>
+
+**Q：装完之后终端没有无缝对话功能？**
+
+新开一个终端窗口。Shell hook 是写到 `~/.bashrc` / `~/.zshrc` / `~/.config/fish/conf.d/laozhou.fish` 的，旧终端不会自动加载。
+
+**Q：默认的 opencode 公共模型服务够用吗？**
+
+日用排障、指令转化够用。如果需要更强的推理能力或者更快的响应，建议在 `laozhou config` 里配置自己的 API。
+
+**Q：知识库支持语义检索吗？**
+
+支持。默认是关键词检索，在 `laozhou config` 中配置 Embedding 模型后即可启用语义检索。
+
+**Q：老周会上传我的数据吗？**
+
+不会。老周只在调用大模型时把当前对话上下文发给配置的 Provider，知识库、记忆、配置都存在本地 `~/.local/share/laozhou`。
+
+**Q：和原版 Miyu 有什么区别？**
+
+- 人设：二次元少女 → 43 岁运维老油条
+- 定位：通用桌面助手 → Linux 运维偏向
+- 功能：新增 PKGBUILD 审查、AUR 状态查询、搜索结果自动入库等运维向能力
+- 框架：基于 Miyu 原有架构，未做破坏性改动
 
 </details>
 
