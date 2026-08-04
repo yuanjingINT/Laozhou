@@ -40,6 +40,13 @@ laozhou config
   sudo pacman -U laozhou-*.pkg.tar.zst
   ```
 
+  安装后可复制内置的示例人格和用户身份到用户目录（可选）：
+
+  ```
+  cp /usr/share/laozhou/personas/*.md ~/.config/laozhou/prompts/
+  cp /usr/share/laozhou/identities/*.md ~/.config/laozhou/identities/
+  ```
+
 - 从源码构建
 
   需要安装 Rust 1.96 或更新版本、C 编译工具链、`pkg-config` 和 ALSA 开发库，图片显示功能依赖 `chafa`。Arch Linux、Fedora 和 Ubuntu 24.04 均已验证可构建。
@@ -121,7 +128,19 @@ Laozhou 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文�
 
   在 TUI 中配置 Provider 和模型即可。
 
-3. **集成终端**（可选但强烈推荐）
+3. **选择 AI 人格和用户身份**（可选）
+
+  在 TUI 中可以切换老周的人格定位和你的用户身份：
+
+  ```
+  laozhou config
+  # → AI 人格 → 选择后端开发/DBA/安全工程师/全栈/网络工程师等
+  # → 用户身份 → 选择 linux小白/老板/默认
+  ```
+
+  人格决定老周的专业领域和说话风格，用户身份决定老周对你的回答方式。两者可独立组合。
+
+4. **集成终端**（可选但强烈推荐）
 
   让老周住进你的 shell，敲命令时自然语言直接转化：
 
@@ -138,7 +157,7 @@ Laozhou 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文�
 
   重开终端后，直接在终端里说话就能触发老周。
 
-4. **开始对话**
+5. **开始对话**
 
   ```
   # 单次问答
@@ -156,12 +175,44 @@ Laozhou 的 CLI、REPL、配置 TUI 和工具状态支持英文与简体中文�
 | 用途 | 路径 |
 | --- | --- |
 | 主配置 | `~/.config/laozhou/config.json` |
+| AI 人格 | `~/.config/laozhou/prompts/` |
+| 用户身份 | `~/.config/laozhou/identities/` |
 | 知识库数据 | `~/.local/share/laozhou/kb/` |
 | 知识库元数据 | `~/.local/share/laozhou/kb_meta.db` |
 | 语义索引 | `~/.local/share/laozhou/semantic_index.db` |
 | 表情包 | `~/.local/share/laozhou/memes/` |
 | 日志 | `~/.local/share/laozhou/logs/` |
 | Shell Hook | `~/.config/laozhou/shell/` |
+| 内置示例资源 | `/usr/share/laozhou/`（personas / identities / default-kb / memes） |
+
+### AI 人格与用户身份
+
+Laozhou 支持两个独立的维度来定制对话体验：
+
+- **AI 人格**：决定老周的专业领域和说话风格。默认是"运维老油条"，内置 10 个示例人格覆盖后端开发、网络工程师、DBA、安全工程师、全栈开发等职业，每种职业搭配不同的语言风格（温和佛系、老干部、丧系话痨、热血奋斗、冷幽默等）。
+- **用户身份**：决定老周对你的回答方式。内置 3 种：`linux小白`（命令附说明、分步骤、危险操作警告）、`老板`（只给结论和风险、不甩命令、给方案选项）、`默认`（有一定基础、正常节奏）。
+
+在 `laozhou config` 的 TUI 中可独立选择两者，组合使用。例如"老徐（网络工程师·老干部风）+ 老板身份"会让老徐用体制腔向老板汇报网络问题。
+
+### 人设批量生成器
+
+Laozhou 内置了基于"老周"模板的人设生成器 `persona_generator.py`，可批量生成结构一致但特征各异的人设 prompt：
+
+```
+# 生成 10 个随机人设并安装到人格目录
+python3 /usr/share/laozhou/persona_generator.py -n 10 --install --no-json
+
+# 指定职业类型生成
+python3 /usr/share/laozhou/persona_generator.py --persona-type security -n 3 --install --no-json
+
+# 指定语言风格
+python3 /usr/share/laozhou/persona_generator.py --language-style 毒舌刻薄 --install --no-json
+
+# 查看所有可配置维度
+python3 /usr/share/laozhou/persona_generator.py --list
+```
+
+支持 20 个可配置参数维度（核心身份 / 语言风格 / 专业领域 / 人设特征 / 行为约束），10 种职业类型 × 8 种语言风格 × 16 种性格，MD5 指纹去重保证唯一性。
 
 ### 内置插件
 
