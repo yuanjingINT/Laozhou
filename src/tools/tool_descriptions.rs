@@ -110,6 +110,7 @@ macro_rules! tool_description_files {
             include_str!("descriptions/trash_path.json"),
             include_str!("descriptions/unregister_script.json"),
             include_str!("descriptions/update_meme.json"),
+            include_str!("descriptions/save_search_to_kb.json"),
             include_str!("descriptions/upload_text_to_knowledge_base.json"),
             include_str!("descriptions/vision_analyze.json"),
             include_str!("descriptions/web_fetch.json"),

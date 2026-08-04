@@ -54,8 +54,8 @@ const LOGIN_ATTEMPT_LIMIT: u8 = 5;
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const STYLES_CSS: &str = include_str!("../web/styles.css");
 const APP_JS: &str = include_str!("../web/app.js");
-const LAOZHOU_LOGO: &[u8] = include_bytes!("../pics/laozhou-logo.png");
-const LAOZHOU_WALLPAPER: &[u8] = include_bytes!("../pics/laozhouwallpaper.png");
+const LAOZHOU_LOGO: &[u8] = include_bytes!("../pics/1785392014547.jpg");
+const LAOZHOU_WALLPAPER: &[u8] = include_bytes!("../pics/tui.png");
 
 #[derive(Clone)]
 struct WebState {
@@ -995,7 +995,7 @@ async fn app_asset() -> Response {
 }
 
 async fn logo_asset() -> Response {
-    binary_asset(LAOZHOU_LOGO, "image/png")
+    binary_asset(LAOZHOU_LOGO, "image/jpeg")
 }
 
 async fn wallpaper_asset() -> Response {

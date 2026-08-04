@@ -78,6 +78,32 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPa
                 async move { tool_remove(args, config, paths).await }
             },
         ).writes());
+        let save_config = config.clone();
+        let save_paths = paths.clone();
+        registry.register(ToolSpec::new(
+            "save_search_to_kb",
+            "Summarize web search results and save to the knowledge base as a structured Markdown file. Use after web_search/web_fetch finds valuable technical info worth keeping. Automatically formats with title, problem description, solution, commands, and pitfalls.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Concise title for the knowledge base entry, e.g. 'NVIDIA驱动黑屏解决方法'." },
+                    "query": { "type": "string", "description": "The original search query that led to this result." },
+                    "summary": { "type": "string", "description": "Summarized key findings from the search results, in the agent's own words." },
+                    "solution": { "type": "string", "description": "Specific solution steps, commands, or configuration changes." },
+                    "commands": { "type": "string", "description": "Relevant shell commands, one per line. Optional." },
+                    "pitfalls": { "type": "string", "description": "Pitfalls and warnings, one per line. Optional." },
+                    "source_urls": { "type": "array", "items": { "type": "string" }, "description": "Source URLs referenced. Optional." },
+                    "file_name": { "type": "string", "description": "Optional custom file name (without extension). If omitted, derived from title." }
+                },
+                "required": ["title", "query", "summary", "solution"],
+                "additionalProperties": false
+            }),
+            move |args| {
+                let config = save_config.clone();
+                let paths = save_paths.clone();
+                async move { tool_save_search(args, config, paths).await }
+            },
+        ).writes());
     }
 }
 
@@ -181,6 +207,10 @@ impl KnowledgeBase {
         let semantic = self.semantic_conn()?;
         init_semantic_db(&semantic)?;
         Ok(())
+    }
+
+    pub fn files_dir(&self) -> &Path {
+        &self.files_dir
     }
 
     fn readonly_available(&self) -> bool {
@@ -1048,6 +1078,135 @@ async fn tool_upload(args: Value, config: AppConfig, paths: LaozhouPaths) -> Res
     Ok(json!({
         "ok": true,
         "path": saved,
+    })
+    .to_string())
+}
+
+async fn tool_save_search(args: Value, config: AppConfig, paths: LaozhouPaths) -> Result<String> {
+    ensure_enabled(&config)?;
+    if !config.plugins.knowledge_base.upload_tool_enabled {
+        bail!("knowledge base upload tool is disabled")
+    }
+    let title = args
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if title.is_empty() {
+        bail!("title is required")
+    }
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let summary = args
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if summary.is_empty() {
+        bail!("summary is required")
+    }
+    let solution = args
+        .get("solution")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if solution.is_empty() {
+        bail!("solution is required")
+    }
+    let commands = args
+        .get("commands")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let pitfalls = args
+        .get("pitfalls")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let source_urls: Vec<String> = args
+        .get("source_urls")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let file_name = args
+        .get("file_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+
+    let slug_name = if file_name.is_empty() {
+        slug(title)
+    } else {
+        slug(file_name)
+    };
+    let rel = format!(
+        "search_notes/{}/{}.md",
+        Local::now().format("%Y-%m"),
+        slug_name
+    );
+
+    let mut body = format!(
+        "# {}\n\n> 来源：网络搜索总结\n> 搜索关键词：{}\n> 保存时间：{}\n\n## 问题描述\n\n{}\n\n## 解决方案\n\n{}\n\n",
+        title,
+        query,
+        Local::now().format("%Y-%m-%d %H:%M:%S"),
+        summary,
+        solution,
+    );
+
+    if !commands.is_empty() {
+        body.push_str("## 命令\n\n```bash\n");
+        body.push_str(commands);
+        body.push_str("\n```\n\n");
+    }
+
+    if !pitfalls.is_empty() {
+        body.push_str("## 踩坑点\n\n");
+        for line in pitfalls.lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                body.push_str(&format!("- {}\n", line));
+            }
+        }
+        body.push('\n');
+    }
+
+    if !source_urls.is_empty() {
+        body.push_str("## 参考来源\n\n");
+        for url in &source_urls {
+            body.push_str(&format!("- {}\n", url));
+        }
+        body.push('\n');
+    }
+
+    let kb = KnowledgeBase::new(config, paths)?;
+    kb.init()?;
+
+    let existing = kb.files_dir().join(&rel);
+    let overwritten = existing.exists();
+
+    let temp = tempfile::NamedTempFile::new()?;
+    std::fs::write(temp.path(), body.as_bytes())?;
+    let saved = kb.import_file(temp.path(), &rel)?;
+    kb.spawn_embedding_reindex()?;
+
+    Ok(json!({
+        "ok": true,
+        "path": saved,
+        "title": title,
+        "overwritten": overwritten,
+        "note": if overwritten {
+            "已覆盖同名文件"
+        } else {
+            "新建知识库条目"
+        },
     })
     .to_string())
 }

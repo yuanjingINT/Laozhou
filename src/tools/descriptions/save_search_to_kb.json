@@ -1,0 +1,50 @@
+{
+  "name": "save_search_to_kb",
+  "display_name": "搜索结果存入知识库",
+  "description": "将网络搜索结果总结后保存到知识库。搜索到有价值的技术信息后，提取标题、问题描述、解决方案、命令和踩坑点，自动生成结构化 Markdown 并入库。适用于 web_search/web_fetch 后的知识沉淀。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "知识库条目标题，如 'NVIDIA驱动黑屏解决方法'"
+      },
+      "query": {
+        "type": "string",
+        "description": "原始搜索关键词"
+      },
+      "summary": {
+        "type": "string",
+        "description": "搜索结果的总结摘要"
+      },
+      "solution": {
+        "type": "string",
+        "description": "具体解决方案、步骤或配置变更"
+      },
+      "commands": {
+        "type": "string",
+        "description": "相关命令，每行一个。可选"
+      },
+      "pitfalls": {
+        "type": "string",
+        "description": "踩坑点和注意事项，每行一个。可选"
+      },
+      "source_urls": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "参考来源 URL 列表。可选"
+      },
+      "file_name": {
+        "type": "string",
+        "description": "自定义文件名（不含扩展名）。省略则从标题生成"
+      }
+    },
+    "required": ["title", "query", "summary", "solution"]
+  },
+  "permission": "writes",
+  "always_loaded": false,
+  "load_policy": "group",
+  "groups": ["kb"]
+}
