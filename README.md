@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="pics/laozhou-logo.png" alt="Laozhou" width="180">
+  <img src="pics/1785392014547.jpg" alt="Laozhou" width="180">
 </p>
 
 # 老周（Laozhou）
