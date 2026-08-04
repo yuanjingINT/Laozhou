@@ -206,7 +206,9 @@ async fn run_deep_research(
 
     loop {
         let iteration = iterations + 1;
-        if max_revisions != usize::MAX && iteration > max_revisions.saturating_add(1) {
+        // 硬上限 10 轮，防止 LLM 自我循环消耗 token
+        let effective_max = max_revisions.min(10);
+        if effective_max != usize::MAX && iteration > effective_max.saturating_add(1) {
             break;
         }
         iterations = iteration;

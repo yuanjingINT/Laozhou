@@ -1,6 +1,6 @@
 [package]
 name = "laozhou"
-version = "26.1.3"
+version = "26.1.4"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/yuanjingINT/Laozhou"

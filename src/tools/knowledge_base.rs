@@ -1656,7 +1656,14 @@ fn unix_time(time: SystemTime) -> f64 {
 fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.trim().strip_prefix("~/") {
         if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
-            return home.join(rest);
+            let expanded = home.join(rest);
+            // 二次校验：展开后必须仍在 home 目录内，防止符号链接逃逸
+            if let Ok(canonical) = expanded.canonicalize() {
+                if canonical.starts_with(&home) {
+                    return canonical;
+                }
+            }
+            return expanded;
         }
     }
     PathBuf::from(value.trim())

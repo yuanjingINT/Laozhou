@@ -82,6 +82,18 @@ struct LoginAttempt {
     failures: u8,
 }
 
+impl LoginAttempt {
+    /// 指数退避：失败次数越多，冷却窗口越长，防止暴力破解
+    fn current_cooldown(&self) -> Duration {
+        if self.failures == 0 {
+            return Duration::ZERO;
+        }
+        // 基础窗口 60s，每次失败翻倍，上限 30 分钟
+        let secs = LOGIN_WINDOW.as_secs().saturating_mul(1u64 << self.failures.saturating_sub(1).min(5));
+        Duration::from_secs(secs.min(1800))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum LoginFailure {
     Invalid,
@@ -124,9 +136,14 @@ impl WebAuth {
                 window_started: now,
                 failures: 0,
             });
-            if now.duration_since(entry.window_started) >= LOGIN_WINDOW {
+            // 指数退避：根据失败次数计算冷却时间，窗口内禁止重试
+            let cooldown = entry.current_cooldown();
+            if now.duration_since(entry.window_started) < cooldown {
+                return Err(LoginFailure::RateLimited);
+            }
+            // 冷却期过后才重置窗口
+            if now.duration_since(entry.window_started) >= cooldown && entry.failures > 0 {
                 entry.window_started = now;
-                entry.failures = 0;
             }
             if entry.failures >= LOGIN_ATTEMPT_LIMIT {
                 return Err(LoginFailure::RateLimited);

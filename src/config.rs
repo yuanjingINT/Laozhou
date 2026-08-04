@@ -1188,7 +1188,10 @@ impl AppConfig {
             config.system_prompt_file = Some("system-prompt.md".to_string());
         }
         let raw = serde_json::to_string_pretty(&config)?;
-        std::fs::write(&paths.config_file, format!("{raw}\n"))?;
+        // 原子写入：先写临时文件，再 rename，防止中途崩溃导致配置损坏
+        let tmp_file = paths.config_file.with_extension("json.tmp");
+        std::fs::write(&tmp_file, format!("{raw}\n"))?;
+        std::fs::rename(&tmp_file, &paths.config_file)?;
         Ok(())
     }
 

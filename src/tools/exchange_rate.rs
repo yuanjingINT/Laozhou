@@ -2,6 +2,14 @@ use super::{ToolRegistry, ToolSpec};
 use crate::config::ExchangeRatePluginConfig;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use std::time::Duration;
+
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(Into::into)
+}
 
 pub fn register(registry: &mut ToolRegistry, config: ExchangeRatePluginConfig) {
     registry.register(ToolSpec::new(
@@ -38,7 +46,7 @@ async fn get_exchange_rate(args: Value, config: ExchangeRatePluginConfig) -> Res
             "https://v6.exchangerate-api.com/v6/{}/latest/{base}",
             config.api_key.trim()
         );
-        let data: Value = reqwest::Client::new()
+        let data: Value = http_client()?
             .get(url)
             .send()
             .await?

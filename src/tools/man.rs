@@ -1,9 +1,17 @@
 use super::{ToolRegistry, ToolSpec};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 const ARCH_BASE: &str = "https://man.archlinux.org";
 const MAN7_BASE: &str = "https://man7.org/linux/man-pages";
+
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(Into::into)
+}
 
 pub fn register(registry: &mut ToolRegistry) {
     registry.register(ToolSpec::new(
@@ -45,7 +53,7 @@ async fn search(args: Value) -> Result<String> {
     if !section.is_empty() {
         url.push_str(&format!("&section={}", urlencoding::encode(section)));
     }
-    let html = reqwest::get(url).await?.error_for_status()?.text().await?;
+    let html = http_client()?.get(url).send().await?.error_for_status()?.text().await?;
     let mut results = Vec::new();
     for line in html.lines() {
         if let Some(pos) = line.find("/man/") {
@@ -110,7 +118,7 @@ async fn get_page(args: Value) -> Result<String> {
 }
 
 async fn fetch_text(url: &str) -> Result<String> {
-    Ok(reqwest::get(url).await?.error_for_status()?.text().await?)
+    Ok(http_client()?.get(url).send().await?.error_for_status()?.text().await?)
 }
 
 fn required(args: &Value, key: &str) -> Result<String> {

@@ -569,6 +569,7 @@ impl Agent {
         self.state
             .start_turn(&turn_id, &input, std::process::id())?;
         let guard = PendingTurnGuard::new(self.state.clone(), turn_id.clone());
+        // guard 的 Drop 保证：任何 return Err / panic 路径都会调用 interrupt_turn 清理状态
         let mut on_event = on_event;
         on_event(AgentEvent::TurnStarted {
             turn_id: turn_id.clone(),

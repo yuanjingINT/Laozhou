@@ -256,6 +256,8 @@ fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn frontmatter_value(raw: &str, key: &str) -> Option<String> {

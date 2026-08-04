@@ -251,16 +251,22 @@ fn ensure_path_within_root(path: &Path, scripts_dir: &Path) -> Result<PathBuf> {
             scripts_dir.display()
         )
     })?;
-    let path = path
+    // 先打开文件拿到 fd，再通过 /proc/self/fd 读回真实路径，杜绝 TOCTOU 符号链接替换
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("failed to open script path {}", path.display()))?;
+    use std::os::unix::io::AsRawFd;
+    let fd_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+    let resolved = fd_path
         .canonicalize()
+        .or_else(|_| path.canonicalize())
         .with_context(|| format!("failed to resolve script path {}", path.display()))?;
-    if !path.starts_with(&root) {
+    if !resolved.starts_with(&root) {
         bail!(
             "script path must stay within the scripts directory: {}",
-            path.display()
+            resolved.display()
         );
     }
-    Ok(path)
+    Ok(resolved)
 }
 
 fn relative_script_path(path: &Path, scripts_dir: &Path) -> String {
