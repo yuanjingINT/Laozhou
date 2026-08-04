@@ -1542,7 +1542,7 @@ dependencies = [
 
 [[package]]
 name = "laozhou"
-version = "0.3.0"
+version = "26.1.0"
 dependencies = [
  "anyhow",
  "axum",

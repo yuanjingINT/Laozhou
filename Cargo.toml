@@ -1,9 +1,9 @@
 [package]
 name = "laozhou"
-version = "0.3.0"
+version = "26.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/SHORiN-KiWATA/Laozhou"
+repository = "https://github.com/yuanjingINT/Laozhou"
 description = "Command-line AI assistant"
 
 [dependencies]
