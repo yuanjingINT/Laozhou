@@ -1407,7 +1407,7 @@ pub async fn embed_text(
     text: &str,
 ) -> Result<Vec<f32>> {
     let api_key = provider.api_key.as_deref().unwrap_or_default().trim();
-    if api_key.is_empty() {
+    if api_key.is_empty() && !provider.is_local_endpoint() {
         bail!("embedding provider {} has no api_key", provider.id)
     }
     let client = Client::builder()
@@ -1416,12 +1416,13 @@ pub async fn embed_text(
         ))
         .build()?;
     let url = format!("{}/embeddings", provider.base_url.trim_end_matches('/'));
-    let response = client
+    let mut request = client
         .post(&url)
-        .bearer_auth(api_key)
-        .json(&json!({ "model": model, "input": text }))
-        .send()
-        .await?;
+        .json(&json!({ "model": model, "input": text }));
+    if !api_key.is_empty() {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send().await?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();

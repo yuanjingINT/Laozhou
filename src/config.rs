@@ -1080,11 +1080,20 @@ impl ProviderConfig {
             append_resolved_api_keys(&mut keys, api_key)?;
         }
 
-        if keys.is_empty() && self.is_opencode_zen() {
-            keys.push(ResolvedProviderKey {
-                index: 0,
-                value: "public".to_string(),
-            });
+        if keys.is_empty() {
+            let fallback = if self.is_opencode_zen() {
+                Some("public".to_string())
+            } else if self.is_local_endpoint() {
+                Some(String::new())
+            } else {
+                None
+            };
+            if let Some(value) = fallback {
+                keys.push(ResolvedProviderKey {
+                    index: 0,
+                    value,
+                });
+            }
         }
 
         if keys.is_empty() {
@@ -1094,6 +1103,17 @@ impl ProviderConfig {
             key.index = index;
         }
         Ok(keys)
+    }
+
+    pub fn is_local_endpoint(&self) -> bool {
+        let Some(host) = local_endpoint_host(&self.base_url) else {
+            return false;
+        };
+        if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+            return true;
+        }
+        host.parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
     }
 
     pub fn is_opencode_zen(&self) -> bool {
@@ -1142,6 +1162,27 @@ fn split_api_keys(raw: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .collect()
+}
+
+fn local_endpoint_host(base_url: &str) -> Option<String> {
+    let raw = base_url.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let with_scheme = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("http://{raw}")
+    };
+    url::Url::parse(&with_scheme)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .map(|host| {
+            host.trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches('.')
+                .to_string()
+        })
 }
 
 fn active_model_exists(providers: &[ProviderConfig], active: &ActiveProviderModelConfig) -> bool {
@@ -2345,6 +2386,71 @@ fn default_on_overflow() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_paths(root: &std::path::Path) -> LaozhouPaths {
+        LaozhouPaths {
+            config_dir: root.join("config"),
+            config_file: root.join("config/config.jsonc"),
+            skills_dir: root.join("config/skills"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            state_dir: root.join("state"),
+            pictures_dir: root.join("pictures"),
+            fish_hook_file: root.join("laozhou.fish"),
+            bash_hook_file: root.join("laozhou.bash"),
+            zsh_hook_file: root.join("laozhou.zsh"),
+            scripts_dir: root.join("scripts"),
+            system_scripts_dir: root.join("system-scripts"),
+        }
+    }
+
+    #[test]
+    fn local_provider_without_api_key_resolves_empty_key() {
+        let paths = test_paths(std::path::Path::new("/tmp/laozhou-test"));
+        for base_url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1",
+        ] {
+            let provider = ProviderConfig::template("ollama", "Ollama", base_url);
+            let keys = provider.resolved_api_keys(&paths).unwrap();
+            assert_eq!(keys.len(), 1);
+            assert!(keys[0].value.is_empty());
+        }
+    }
+
+    #[test]
+    fn remote_provider_without_api_key_still_errors() {
+        let paths = test_paths(std::path::Path::new("/tmp/laozhou-test"));
+        for base_url in [
+            "https://api.openai.com/v1",
+            "http://192.168.1.5:11434/v1",
+            "http://10.0.0.2:11434/v1",
+            "https://api.deepseek.com",
+        ] {
+            let provider = ProviderConfig::template("custom", "Custom", base_url);
+            assert!(provider.resolved_api_keys(&paths).is_err());
+        }
+    }
+
+    #[test]
+    fn is_local_endpoint_detects_loopback_hosts() {
+        for (base_url, expected) in [
+            ("http://localhost:11434/v1", true),
+            ("http://127.0.0.1:11434/v1", true),
+            ("http://[::1]:11434/v1", true),
+            ("http://localhost", true),
+            ("http://myhost.local:11434/v1", true),
+            ("http://192.168.1.5:11434/v1", false),
+            ("http://10.0.0.2:11434/v1", false),
+            ("https://api.openai.com/v1", false),
+            ("http://localhost:11434/v1/", true),
+            ("", false),
+        ] {
+            let provider = ProviderConfig::template("t", "T", base_url);
+            assert_eq!(provider.is_local_endpoint(), expected, "for {base_url:?}");
+        }
+    }
 
     #[test]
     fn provider_config_can_be_saved_without_active_model() {

@@ -1153,10 +1153,11 @@ impl OpenAiCompatibleClient {
         stage: &'static str,
     ) -> Result<reqwest::Response> {
         self.send_with_transport_retry(request_id, stage, || {
-            self.client
-                .post(url)
-                .bearer_auth(&self.api_key)
-                .json(request)
+            let mut request = self.client.post(url).json(request);
+            if !self.api_key.is_empty() {
+                request = request.bearer_auth(&self.api_key);
+            }
+            request
         })
         .await
     }
@@ -1580,10 +1581,11 @@ impl OpenAiCompatibleClient {
         let url = format!("{}/responses", self.provider.base_url.trim_end_matches('/'));
         let response = self
             .send_with_transport_retry(request_id, "responses.send", || {
-                self.client
-                    .post(&url)
-                    .bearer_auth(&self.api_key)
-                    .json(&request)
+                let mut request = self.client.post(&url).json(&request);
+                if !self.api_key.is_empty() {
+                    request = request.bearer_auth(&self.api_key);
+                }
+                request
             })
             .await?;
         let status = response.status();

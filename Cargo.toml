@@ -51,6 +51,7 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
+url = "2.5"
 urlencoding = "2.1"
 vte = "0.15"
 rustc-hash = "2"
