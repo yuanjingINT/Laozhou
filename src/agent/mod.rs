@@ -617,6 +617,24 @@ impl Agent {
             result.usage_estimated,
         )?;
         self.memory.process_after_turn(&input, &result.content)?;
+
+        // 梦境功能：对话结束后异步触发意图预测（不阻塞主响应）
+        if self.config.plugins.dream.enabled {
+            let dream_config = self.config.clone();
+            let dream_paths = self.paths.clone();
+            let dream_input = input.clone();
+            let dream_response = result.content.clone();
+            tokio::spawn(async move {
+                crate::dream::trigger_dream(
+                    dream_config,
+                    dream_paths,
+                    &dream_input,
+                    &dream_response,
+                )
+                .await;
+            });
+        }
+
         if let Some(usage) = result.usage.clone() {
             self.state.add_usage(&usage)?;
         }
@@ -1265,6 +1283,26 @@ impl Agent {
                     None
                 };
                 messages.push(ChatMessage::tool(call.id, output.clone()));
+                if tool_succeeded
+                    && !matches!(self.mode, AgentMode::Plan)
+                    && (call.function.name == "web_search" || call.function.name == "web_fetch")
+                {
+                    let auto_config = self.config.clone();
+                    let auto_paths = self.paths.clone();
+                    let auto_tool = call.function.name.clone();
+                    let auto_args = call.function.arguments.clone();
+                    let auto_output = output.clone();
+                    tokio::spawn(async move {
+                        crate::tools::knowledge_base::auto_save_web_tool(
+                            auto_config,
+                            auto_paths,
+                            &auto_tool,
+                            &auto_args,
+                            &auto_output,
+                        )
+                        .await;
+                    });
+                }
                 if tool_succeeded && call.function.name == "load_tools" {
                     let loaded = loaded_items_from_output(&output);
                     for name in &loaded.tools {

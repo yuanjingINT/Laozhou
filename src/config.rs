@@ -343,6 +343,8 @@ pub struct PluginsConfig {
     pub diagnostics: DiagnosticsPluginConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub dream: DreamPluginConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -557,6 +559,10 @@ pub struct KnowledgeBasePluginConfig {
     pub keyword_strong_score_threshold: f32,
     #[serde(default = "default_kb_embedding_timeout_seconds")]
     pub embedding_timeout_seconds: u64,
+    #[serde(default = "default_true")]
+    pub auto_save_web: bool,
+    #[serde(default = "default_kb_auto_save_web_max_chars")]
+    pub auto_save_web_max_chars: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -566,6 +572,36 @@ pub struct CalculatorPluginConfig {
     #[serde(default = "default_calculator_backend")]
     pub backend: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamPluginConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub encrypt: bool,
+    #[serde(default = "default_dream_max_history")]
+    pub max_history_entries: usize,
+    #[serde(default = "default_dream_accuracy_threshold")]
+    pub accuracy_threshold: f64,
+    #[serde(default = "default_dream_timeout")]
+    pub subagent_timeout_secs: u64,
+}
+
+impl Default for DreamPluginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            encrypt: true,
+            max_history_entries: 100,
+            accuracy_threshold: 0.8,
+            subagent_timeout_secs: 60,
+        }
+    }
+}
+
+fn default_dream_max_history() -> usize { 100 }
+fn default_dream_accuracy_threshold() -> f64 { 0.8 }
+fn default_dream_timeout() -> u64 { 60 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticsPluginConfig {
@@ -650,6 +686,7 @@ impl Default for PluginsConfig {
             deep_research_linux_game_compatibility: LinuxGameCompatibilityConfig::default(),
             diagnostics: DiagnosticsPluginConfig::default(),
             memory: MemoryConfig::default(),
+            dream: DreamPluginConfig::default(),
         }
     }
 }
@@ -843,6 +880,8 @@ impl Default for KnowledgeBasePluginConfig {
             semantic_min_score: default_kb_semantic_min_score(),
             keyword_strong_score_threshold: default_kb_keyword_strong_score_threshold(),
             embedding_timeout_seconds: default_kb_embedding_timeout_seconds(),
+            auto_save_web: default_true(),
+            auto_save_web_max_chars: default_kb_auto_save_web_max_chars(),
         }
     }
 }
@@ -2269,6 +2308,10 @@ fn default_kb_keyword_strong_score_threshold() -> f32 {
 
 fn default_kb_embedding_timeout_seconds() -> u64 {
     60
+}
+
+fn default_kb_auto_save_web_max_chars() -> usize {
+    8_000
 }
 
 fn default_diagnostics_timeout() -> u64 {

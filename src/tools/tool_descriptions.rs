@@ -85,6 +85,7 @@ macro_rules! tool_description_files {
             include_str!("descriptions/read_clipboard.json"),
             include_str!("descriptions/read_file.json"),
             include_str!("descriptions/read_knowledge_base_file.json"),
+            include_str!("descriptions/research_knowledge_base.json"),
             include_str!("descriptions/recall_memories.json"),
             include_str!("descriptions/recall_past_events.json"),
             include_str!("descriptions/register_deep_research_reference.json"),

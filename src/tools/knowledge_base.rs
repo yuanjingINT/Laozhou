@@ -1,5 +1,7 @@
-use super::{ToolRegistry, ToolSpec};
+use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner};
+use super::{ToolProgress, ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, KnowledgeBasePluginConfig, ProviderConfig};
+use crate::llm::OpenAiCompatibleClient;
 use crate::paths::LaozhouPaths;
 use anyhow::{bail, Context, Result};
 use chrono::Local;
@@ -13,8 +15,14 @@ use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
+const KB_SUBAGENT_PROMPT: &str = include_str!("../prompts/kb-subagent.md");
+const KB_SUBAGENT_MAX_STEPS: usize = 20;
+const KB_SUBAGENT_TOOL_TIMEOUT_SECS: u64 = 60;
+const KB_SUBAGENT_TOTAL_TIMEOUT_SECS: u64 = 120;
+
 pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
-    register_readonly(registry, config.clone(), paths.clone());
+    register_read_tool(registry, config.clone(), paths.clone());
+    register_research_tool(registry, config.clone(), paths.clone());
     if config.plugins.knowledge_base.upload_tool_enabled {
         let upload_config = config.clone();
         let upload_paths = paths.clone();
@@ -108,6 +116,12 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPa
 }
 
 pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
+    register_search_tool(registry, config.clone(), paths.clone());
+    register_find_tool(registry, config.clone(), paths.clone());
+    register_read_tool(registry, config, paths);
+}
+
+fn register_search_tool(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
     registry.register(ToolSpec::new(
         "search_knowledge_base",
         "Search the local knowledge base content. Returns file paths and original text snippets. Use read_knowledge_base_file if snippets are insufficient. Mention paths only when useful or when the user asks.",
@@ -130,6 +144,9 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
             }
         },
     ));
+}
+
+fn register_find_tool(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
     registry.register(ToolSpec::new(
         "search_knowledge_base_by_name",
         "Find knowledge base files by file name, directory, extension, or path fragment. Returns relative paths for read_knowledge_base_file. Mention paths only when useful or when the user asks.",
@@ -152,9 +169,12 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
             }
         },
     ));
+}
+
+fn register_read_tool(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
     registry.register(ToolSpec::new(
         "read_knowledge_base_file",
-        "Read a knowledge base file by relative path with line pagination. Prefer paths returned by search_knowledge_base or search_knowledge_base_by_name. Summarize the relevant content without exposing raw tool JSON.",
+        "Read a knowledge base file by relative path with line pagination. Prefer paths returned by research_knowledge_base, search_knowledge_base or search_knowledge_base_by_name. Summarize the relevant content without exposing raw tool JSON.",
         json!({
             "type": "object",
             "properties": {
@@ -175,6 +195,108 @@ pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: 
             }
         },
     ));
+}
+
+fn register_research_tool(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
+    registry.register(ToolSpec::new_with_progress(
+        "research_knowledge_base",
+        "Launch a subagent to research the local knowledge base. The subagent searches content and file names, reads full files, and returns a synthesized answer with source paths. Prefer this for complex or multi-step questions.",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "The question or keywords to research in the knowledge base." },
+                "max_results": { "type": "integer", "description": "Optional result limit per search round." }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        }),
+        move |args, progress| {
+            let config = config.clone();
+            let paths = paths.clone();
+            async move { run_research_tool(args, config, paths, progress).await }
+        },
+    ));
+}
+
+async fn run_research_tool(
+    args: Value,
+    config: AppConfig,
+    paths: LaozhouPaths,
+    progress: ToolProgress,
+) -> Result<String> {
+    ensure_enabled(&config)?;
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if query.is_empty() {
+        bail!("query is required");
+    }
+    let max_results = args
+        .get("max_results")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+
+    let mut sub_tools = ToolRegistry::new();
+    register_readonly(&mut sub_tools, config.clone(), paths.clone());
+
+    let mode = ProgressMode::from_config(&config);
+    let sa_progress = SubagentProgress::new(progress, mode, true);
+    sa_progress.phase(if crate::i18n::is_zh() {
+        "子代理正在检索知识库".to_string()
+    } else {
+        "subagent researching knowledge base".to_string()
+    });
+
+    let client = OpenAiCompatibleClient::from_config(&config, &paths)?
+        .for_subagent_output(mode == ProgressMode::Full);
+
+    let prompt = match max_results {
+        Some(limit) => format!("{query}\n\n（每轮搜索最多返回 {limit} 条结果）"),
+        None => query.clone(),
+    };
+
+    let runner = SubagentRunner::new(client, KB_SUBAGENT_PROMPT, sub_tools, sa_progress)
+        .max_steps(KB_SUBAGENT_MAX_STEPS)
+        .timeout_seconds(KB_SUBAGENT_TOOL_TIMEOUT_SECS);
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(KB_SUBAGENT_TOTAL_TIMEOUT_SECS),
+        runner.run(&prompt),
+    )
+    .await;
+
+    let (state, result_text) = match outcome {
+        Ok(Ok((result, stats))) => {
+            let state = if stats.budget_reached {
+                "budget_reached"
+            } else {
+                "completed"
+            };
+            (state, result.content.trim().to_string())
+        }
+        Ok(Err(err)) => (
+            "error",
+            format!("knowledge base research error: {err:#}"),
+        ),
+        Err(_) => (
+            "timeout",
+            format!(
+                "knowledge base research timed out after {KB_SUBAGENT_TOTAL_TIMEOUT_SECS}s"
+            ),
+        ),
+    };
+
+    Ok(json!({
+        "ok": state == "completed" || state == "budget_reached",
+        "kind": "research_knowledge_base",
+        "query": query,
+        "state": state,
+        "result": result_text,
+    })
+    .to_string())
 }
 
 pub struct KnowledgeBase {
@@ -1658,12 +1780,11 @@ fn expand_path(value: &str) -> PathBuf {
         if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
             let expanded = home.join(rest);
             // 二次校验：展开后必须仍在 home 目录内，防止符号链接逃逸
-            if let Ok(canonical) = expanded.canonicalize() {
-                if canonical.starts_with(&home) {
-                    return canonical;
-                }
+            // fail-closed：canonicalize 失败时返回 home 目录本身，而非未校验路径
+            match expanded.canonicalize() {
+                Ok(canonical) if canonical.starts_with(&home) => return canonical,
+                _ => return home,
             }
-            return expanded;
         }
     }
     PathBuf::from(value.trim())
@@ -1691,6 +1812,98 @@ fn slug(value: &str) -> String {
     } else {
         slug.chars().take(48).collect()
     }
+}
+
+pub async fn auto_save_web_tool(
+    config: AppConfig,
+    paths: LaozhouPaths,
+    tool_name: &str,
+    args: &str,
+    output: &str,
+) {
+    let kb_config = &config.plugins.knowledge_base;
+    if !kb_config.enabled || !kb_config.auto_save_web {
+        return;
+    }
+    let max_chars = kb_config.auto_save_web_max_chars.max(500);
+    let source = if tool_name == "web_fetch" {
+        url_from_args(args).unwrap_or_else(|| tool_name.to_string())
+    } else {
+        query_from_args(args).unwrap_or_else(|| tool_name.to_string())
+    };
+    let title = if tool_name == "web_fetch" {
+        format!("网页抓取：{}", clip_title(&source))
+    } else {
+        format!("联网搜索：{}", clip_title(&source))
+    };
+    let body_content = {
+        let total = output.chars().count();
+        if total > max_chars {
+            output.chars().take(max_chars).collect::<String>()
+        } else {
+            output.to_string()
+        }
+    };
+    let body = format!(
+        "# {title}\n\n> 来源：联网内容自动保存\n> 工具：{tool_name}\n> 时间：{}\n\n{}",
+        Local::now().format("%Y-%m-%d %H:%M:%S"),
+        body_content,
+    );
+    let date_dir = Local::now().format("%Y-%m-%d");
+    let hash = &sha256_hex(body.as_bytes())[..8];
+    let rel = format!("auto_web/{date_dir}/{}-{hash}.md", slug(&source));
+    let kb = match KnowledgeBase::new(config.clone(), paths.clone()) {
+        Ok(kb) => kb,
+        Err(err) => {
+            tracing::debug!("auto save web: init failed: {err:#}");
+            return;
+        }
+    };
+    let result = (|| -> Result<String> {
+        kb.init()?;
+        let temp = tempfile::NamedTempFile::new()?;
+        std::fs::write(temp.path(), body.as_bytes())?;
+        kb.import_file(temp.path(), &rel)
+    })();
+    if let Err(err) = result {
+        tracing::debug!("auto save web to knowledge base failed: {err:#}");
+    }
+}
+
+fn clip_title(value: &str) -> String {
+    let text = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    text.chars().take(120).collect()
+}
+
+fn query_from_args(args: &str) -> Option<String> {
+    let parsed: Value = serde_json::from_str(args).ok()?;
+    parsed
+        .get("query")
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn url_from_args(args: &str) -> Option<String> {
+    let parsed: Value = serde_json::from_str(args).ok()?;
+    let url = parsed
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    Some(
+        url.strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or(url)
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -1772,5 +1985,85 @@ mod tests {
         let error = kb.edit_lines("note.md", 2, 2, "two").unwrap_err();
 
         assert!(error.to_string().contains("out of range"));
+    }
+
+    #[test]
+    fn register_exposes_research_tool_but_not_direct_search_to_main_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let config = AppConfig::default();
+        let mut registry = ToolRegistry::new();
+        register(&mut registry, config.clone(), paths.clone());
+
+        assert!(registry.tool_names().contains(&"research_knowledge_base".to_string()));
+        assert!(registry.tool_names().contains(&"read_knowledge_base_file".to_string()));
+        assert!(!registry.tool_names().contains(&"search_knowledge_base".to_string()));
+        assert!(!registry
+            .tool_names()
+            .contains(&"search_knowledge_base_by_name".to_string()));
+
+        let mut readonly = ToolRegistry::new();
+        register_readonly(&mut readonly, config, paths);
+        assert!(readonly.tool_names().contains(&"search_knowledge_base".to_string()));
+        assert!(readonly
+            .tool_names()
+            .contains(&"search_knowledge_base_by_name".to_string()));
+    }
+
+    #[test]
+    fn auto_save_web_tool_skips_when_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = AppConfig::default();
+        config.plugins.knowledge_base.auto_save_web = false;
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            auto_save_web_tool(
+                config,
+                paths.clone(),
+                "web_fetch",
+                r#"{"url":"https://example.com/a"}"#,
+                "some content",
+            )
+            .await;
+        });
+
+        assert!(!paths.data_dir.join("kb/files").exists());
+    }
+
+    #[test]
+    fn auto_save_web_tool_writes_file_when_enabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = test_paths(temp.path());
+        let mut config = AppConfig::default();
+        config.plugins.knowledge_base.auto_save_web = true;
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            auto_save_web_tool(
+                config,
+                paths.clone(),
+                "web_fetch",
+                r#"{"url":"https://example.com/a"}"#,
+                "auto-saved content",
+            )
+            .await;
+        });
+
+        let files_dir = paths.data_dir.join("kb/files/auto_web");
+        let entries = std::fs::read_dir(&files_dir).unwrap().count();
+        assert_eq!(entries, 1);
+        let today = Local::now().format("%Y-%m-%d");
+        let day_dir = files_dir.join(today.to_string());
+        let file = std::fs::read_dir(day_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let content = std::fs::read_to_string(file).unwrap();
+        assert!(content.contains("网页抓取"));
+        assert!(content.contains("auto-saved content"));
     }
 }

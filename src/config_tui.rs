@@ -203,7 +203,7 @@ fn plugin_row(state: &str, name: &str, description: &str, width: usize) -> Strin
     fixed + &truncate(description, remaining)
 }
 
-fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
+fn plugin_names() -> [(&'static str, &'static str, &'static str); 14] {
     [
         (
             "web",
@@ -291,6 +291,14 @@ fn plugin_names() -> [(&'static str, &'static str, &'static str); 13] {
                 "Proton/反作弊/兼容性查询",
             ),
         ),
+        (
+            "dream",
+            t("Dream", "梦境"),
+            t(
+                "Predict next intent after conversation",
+                "对话结束后预测下一步意图",
+            ),
+        ),
     ]
 }
 
@@ -314,6 +322,7 @@ fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
                 .deep_research_linux_game_compatibility
                 .enabled
         }
+        13 => config.plugins.dream.enabled,
         _ => false,
     }
 }
@@ -339,6 +348,7 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
                 .deep_research_linux_game_compatibility
                 .enabled = value
         }
+        13 => config.plugins.dream.enabled = value,
         _ => {}
     }
 }
@@ -651,6 +661,14 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .embedding_timeout_seconds
                     .to_string(),
             ),
+            Field::boolean(
+                t("Auto-save web results to KB", "联网内容自动入库"),
+                config.plugins.knowledge_base.auto_save_web,
+            ),
+            Field::new(
+                t("Auto-save max chars", "自动入库字数上限"),
+                config.plugins.knowledge_base.auto_save_web_max_chars.to_string(),
+            ),
         ],
         8 => vec![Field::boolean(
             t("Enabled", "启用"),
@@ -726,6 +744,25 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                     .deep_research_linux_game_compatibility
                     .max_tool_steps
                     .to_string(),
+            ),
+        ],
+        13 => vec![
+            Field::boolean(t("Enabled", "启用"), config.plugins.dream.enabled),
+            Field::boolean(
+                t("Encrypt dream records", "加密梦境记录"),
+                config.plugins.dream.encrypt,
+            ),
+            Field::new(
+                t("Max history entries", "历史记录条数上限"),
+                config.plugins.dream.max_history_entries.to_string(),
+            ),
+            Field::new(
+                t("Accuracy threshold", "置信度阈值"),
+                config.plugins.dream.accuracy_threshold.to_string(),
+            ),
+            Field::new(
+                t("Subagent timeout (seconds)", "子代理超时秒数"),
+                config.plugins.dream.subagent_timeout_secs.to_string(),
             ),
         ],
         _ => vec![Field::boolean(
@@ -848,6 +885,9 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 fields[14].value.trim().parse()?;
             config.plugins.knowledge_base.embedding_timeout_seconds =
                 fields[15].value.trim().parse()?;
+            config.plugins.knowledge_base.auto_save_web = parse_bool_field(&fields[16].value)?;
+            config.plugins.knowledge_base.auto_save_web_max_chars =
+                fields[17].value.trim().parse()?;
         }
         8 => {
             config.plugins.archlinux.enabled = parse_bool_field(&fields[0].value)?;
@@ -886,6 +926,16 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 .plugins
                 .deep_research_linux_game_compatibility
                 .max_tool_steps = fields[1].value.trim().parse::<usize>()?.clamp(1, 500);
+        }
+        13 => {
+            config.plugins.dream.enabled = parse_bool_field(&fields[0].value)?;
+            config.plugins.dream.encrypt = parse_bool_field(&fields[1].value)?;
+            config.plugins.dream.max_history_entries =
+                fields[2].value.trim().parse::<usize>()?.clamp(1, 10_000);
+            config.plugins.dream.accuracy_threshold =
+                fields[3].value.trim().parse::<f64>()?.clamp(0.0, 1.0);
+            config.plugins.dream.subagent_timeout_secs =
+                fields[4].value.trim().parse::<u64>()?.clamp(5, 600);
         }
         _ => {
             let value = parse_bool_field(&fields[0].value)?;

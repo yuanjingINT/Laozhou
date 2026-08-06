@@ -30,7 +30,7 @@ mod protondb_query;
 mod registry;
 mod scripts;
 mod skills;
-mod subagent_runner;
+pub mod subagent_runner;
 mod task;
 mod todowrite;
 pub mod tool_descriptions;
@@ -157,12 +157,18 @@ fn builtin_readable_tool_name(name: &str) -> Option<&'static str> {
         "upload_knowledge_base_file" | "upload_text_to_knowledge_base" => {
             t("Import knowledge base", "导入知识库")
         }
+        "save_search_to_kb" => t("Save web search to knowledge base", "保存搜索到知识库"),
         "read_knowledge_base_file" => t("Read knowledge base", "读取知识库"),
+        "research_knowledge_base" => t("Research knowledge base", "深度检索知识库"),
         "search_knowledge_base" => t("Search knowledge base", "搜索知识库"),
         "search_knowledge_base_by_name" => t("Search knowledge base by name", "按名称搜索知识库"),
         "edit_knowledge_base_file" => t("Edit knowledge base", "编辑知识库"),
         "remove_knowledge_base_file" => t("Remove from knowledge base", "移除知识库"),
         "list_knowledge_base_files" => t("List knowledge base", "列出知识库"),
+        "search_dream_intentions" => t("Search dream intentions", "搜索梦境意图"),
+        "get_latest_dream_intention" => {
+            t("Latest dream intention", "最新梦境意图")
+        }
         "set_alarm" => t("Set alarm", "设置闹钟"),
         "list_alarms" => t("List alarms", "列出闹钟"),
         "cancel_alarm" => t("Cancel alarm", "取消闹钟"),

@@ -1,0 +1,27 @@
+{
+  "name": "research_knowledge_base",
+  "display_name": "深度检索知识库（子代理）",
+  "description": "Launch a subagent to research the local knowledge base: it searches content and file names, reads full files, and returns a synthesized answer with source paths. Prefer this for complex or multi-step questions.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The question or keywords to research in the knowledge base."
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Optional result limit per search round."
+      }
+    },
+    "required": [
+      "query"
+    ]
+  },
+  "permission": "readonly",
+  "always_loaded": true,
+  "load_policy": "summary",
+  "groups": [
+    "knowledge"
+  ]
+}

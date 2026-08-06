@@ -141,8 +141,11 @@ impl WebAuth {
             if now.duration_since(entry.window_started) < cooldown {
                 return Err(LoginFailure::RateLimited);
             }
-            // 冷却期过后才重置窗口
+            // 冷却期过后重置窗口；达到上限后冷却过期则重置计数器，允许合法用户重试
             if now.duration_since(entry.window_started) >= cooldown && entry.failures > 0 {
+                if entry.failures >= LOGIN_ATTEMPT_LIMIT {
+                    entry.failures = 0;
+                }
                 entry.window_started = now;
             }
             if entry.failures >= LOGIN_ATTEMPT_LIMIT {

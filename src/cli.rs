@@ -8089,6 +8089,9 @@ pub(crate) fn build_tool_registry(
     if config.tools.enabled && interactive_questions {
         tools::register_ask_question(&mut registry);
     }
+    if config.plugins.dream.enabled {
+        crate::dream::register_tools(&mut registry, config.clone(), paths.clone());
+    }
     tools::register_script_display_names(&registry);
     Ok(registry)
 }

@@ -2,7 +2,7 @@
 # Based on Miyu by SHORiN-KiWATA
 
 pkgname=laozhou
-pkgver=26.1.3
+pkgver=26.2.0
 pkgrel=1
 pkgdesc="终端里的运维老油条 — 基于 Miyu 框架改造的 Linux AI 助手"
 arch=('x86_64')
