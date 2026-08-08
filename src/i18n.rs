@@ -108,6 +108,14 @@ pub fn text(en: &'static str, zh: &'static str) -> &'static str {
     }
 }
 
+pub fn text_owned(en: String, zh: String) -> String {
+    if is_zh() {
+        zh
+    } else {
+        en
+    }
+}
+
 pub fn agent_locale() -> Locale {
     Locale::detect()
 }

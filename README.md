@@ -379,6 +379,29 @@ python3 /usr/share/laozhou/persona_generator.py --list
 
   阅读 Fcitx5 wiki，为输入法问题提供参考。
 
+- 语音对话
+
+  >开口就能使唤老周。
+
+  Laozhou 支持语音对话模式：自定义唤醒词唤醒 → 语音转文字（STT）→ AI 回答 → 文字转语音（TTS）朗读。
+
+  ```
+  laozhou voice
+  ```
+
+  首次使用前需要在 `laozhou config` → 插件配置 → 语音 中配置：
+  - **语音识别后端**：默认 `whisper-cli`（whisper.cpp），需安装并配置模型路径；也可选 `xiaomi`（小米 MiMo ASR，需 API Key）
+  - **语音合成后端**：默认 `espeak-ng`，可选 `piper`、`xiaomi`（小米 MiMo TTS）或自定义命令
+  - **唤醒词**：自定义，如 `老周`、`laozhou`，可 `laozhou voice --wake-word 老周` 临时覆盖
+
+  使用小米 MiMo 语音时，需在语音插件配置里填写 `xiaomi_api_key`（支持 `$env:变量名` 引用环境变量）。默认接入小米 MiMo 开放平台（`xiaomi_base_url` 默认 `https://api.xiaomimimo.com/v1`），模型为 `mimo-v2.5-asr`（语音识别）与 `mimo-v2.5-tts`（语音合成），可用 `xiaomi_tts_voice` 选择音色（如 `冰糖`、`茉莉`、`苏打`、`Mia` 等）。
+
+  常用参数：`--no-wake` 跳过唤醒词直接监听，`--once` 完成一次问答后退出，`--no-tts` 不朗读回复。录音后端自动检测 `pw-record`/`parec`/`arecord`。
+
+  完整交互流程：喊唤醒词（如「老周」）→ 老周用语音回应「我在」→ 开始录音 → 你说出指令 → 停顿 `silence_ms` 毫秒（默认 5000）后自动结束录音 → 转文字 → AI 回答 → 语音朗读。
+
+  >**麦克风底噪大导致唤醒不灵敏？** 在语音插件配置中把「输入设备 / Input device」设为 `denoised_source`，Laozhou 会通过 PipeWire WebRTC 降噪（`module-echo-cancel`）消除 USB 耳机等麦克风的持续底噪，让唤醒词和语音识别更准确。配置会自动持久化，降噪源缺失时 Laozhou 会按需自动创建。
+
 </details>
 
 ## 使用示例
@@ -402,6 +425,10 @@ $ laozhou ask "赛博朋克2077 Linux能玩吗"
 # 深度研究
 $ laozhou ask "对比下 Hyprland 和 Niri"
 → 老周会引经据典，写出有理有据的对比报告
+
+# 语音对话（需先配置语音插件）
+$ laozhou voice --wake-word 老周
+→ 听到"老周"唤醒后开始录音 → 转文字 → 老周回答 → 语音朗读
 ```
 
 ## 常见问题

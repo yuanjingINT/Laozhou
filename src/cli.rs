@@ -511,6 +511,11 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
             "清空当前会话历史",
         ),
         ("web", "Start the local Laozhou WebUI", "启动本地 Laozhou WebUI"),
+        (
+            "voice",
+            "Voice conversation: wake word, speech-to-text, text-to-speech",
+            "语音对话：唤醒词、语音转文字、文字转语音",
+        ),
     ];
     for (name, en, zh) in descriptions {
         command = command.mut_subcommand(name, |subcommand| subcommand.about(t(en, zh)));
@@ -526,7 +531,8 @@ fn localize_subcommands(mut command: clap::Command) -> clap::Command {
         .mut_subcommand("skills", localize_skills_command)
         .mut_subcommand("config", localize_config_command)
         .mut_subcommand("reset", localize_reset_command)
-        .mut_subcommand("web", localize_web_command);
+        .mut_subcommand("web", localize_web_command)
+        .mut_subcommand("voice", localize_voice_command);
     command
 }
 
@@ -611,6 +617,34 @@ fn localize_web_command(command: clap::Command) -> clap::Command {
             arg.help(t(
                 "Read the WebUI password from a file",
                 "从文件读取 WebUI 访问密码",
+            ))
+        })
+}
+
+fn localize_voice_command(command: clap::Command) -> clap::Command {
+    command
+        .mut_arg("once", |arg| {
+            arg.help(t(
+                "Exit after a single voice exchange",
+                "完成一次语音问答后退出",
+            ))
+        })
+        .mut_arg("no_wake", |arg| {
+            arg.help(t(
+                "Skip the wake word and start listening immediately",
+                "跳过唤醒词，直接开始监听",
+            ))
+        })
+        .mut_arg("no_tts", |arg| {
+            arg.help(t(
+                "Do not speak replies with text-to-speech",
+                "不使用语音合成朗读回复",
+            ))
+        })
+        .mut_arg("wake_word", |arg| {
+            arg.help(t(
+                "Override the configured wake word",
+                "覆盖配置中的唤醒词",
             ))
         })
 }
@@ -751,6 +785,7 @@ pub enum Command {
     Skills(SkillsArgs),
     Reset(ResetArgs),
     Web(WebArgs),
+    Voice(VoiceArgs),
 }
 
 #[derive(Debug, Args)]
@@ -792,6 +827,21 @@ impl std::fmt::Debug for WebArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct VoiceArgs {
+    #[arg(long)]
+    pub once: bool,
+
+    #[arg(long)]
+    pub no_wake: bool,
+
+    #[arg(long)]
+    pub no_tts: bool,
+
+    #[arg(long)]
+    pub wake_word: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct AlarmWorkerArgs {
     #[arg(long)]
     pub id: String,
@@ -807,11 +857,11 @@ pub struct AlarmWorkerArgs {
     pub audio_file: Option<PathBuf>,
 }
 
-#[derive(Debug, Args)]
-pub struct ToolArgs {
-    pub name: String,
-    pub arguments: Option<String>,
-}
+    #[derive(Debug, Args)]
+    pub struct ToolArgs {
+        pub name: String,
+        pub arguments: Option<String>,
+    }
 
 #[derive(Debug, Args)]
 pub struct ConfigArgs {
@@ -1035,6 +1085,7 @@ pub async fn run(cli: Cli, paths: LaozhouPaths) -> Result<()> {
                 | Some(Command::ZshInit)
                 | Some(Command::RemoveShellHook)
                 | Some(Command::Paths)
+                | Some(Command::Voice(_))
         )
     {
         run_init(&paths, InitKind::FirstRun)?;
@@ -1066,6 +1117,7 @@ pub async fn run(cli: Cli, paths: LaozhouPaths) -> Result<()> {
         Some(Command::Skills(args)) => run_skills(&paths, args),
         Some(Command::Reset(args)) => run_reset(&paths, args.scope.as_deref()),
         Some(Command::Web(args)) => crate::web::run(paths, args).await,
+        Some(Command::Voice(args)) => run_voice(&paths, args).await,
         None => {
             let message = join_message(cli.message);
             if message.is_empty() && io::stdin().is_terminal() {
@@ -2613,6 +2665,152 @@ fn print_chat_token_usage(
         }
     }
     Ok(())
+}
+
+async fn run_voice(paths: &LaozhouPaths, args: VoiceArgs) -> Result<()> {
+    if !io::stdin().is_terminal() {
+        bail!(
+            "{}",
+            t(
+                "voice mode requires an interactive terminal",
+                "语音模式需要交互式终端",
+            )
+        );
+    }
+    AppConfig::init_files(paths)?;
+    let config = AppConfig::load_or_default(paths)?;
+    let mut voice_config = config.plugins.voice.clone();
+    if args.no_wake {
+        voice_config.wake_enabled = false;
+    }
+    if let Some(wake_word) = args.wake_word.as_deref().map(str::trim) {
+        if !wake_word.is_empty() {
+            voice_config.wake_word = wake_word.to_string();
+        }
+    }
+    if args.no_tts {
+        voice_config.speak_replies = false;
+    }
+
+    if !voice_config.enabled {
+        println!(
+            "{}",
+            t(
+                "voice plugin is disabled; enable it in `laozhou config` or run `laozhou voice --help`",
+                "语音插件未启用；可在 `laozhou config` 中启用，或运行 `laozhou voice --help`",
+            )
+        );
+    }
+    if !voice_config.enabled && !args.no_wake {
+        println!(
+            "{}",
+            t(
+                "hint: plugins.voice.enabled must be true to use voice mode",
+                "提示：需将 plugins.voice.enabled 设为 true 才能使用语音模式",
+            )
+        );
+    }
+
+    let state = StateStore::new(paths)?;
+    state.init_files()?;
+    let client = OpenAiCompatibleClient::from_config(&config, paths)?;
+    let registry =
+        build_tool_registry(&config, paths, AgentMode::Normal, crate::question_tui::available(false))?;
+    let mut agent = Agent::new(config.clone(), paths, state.clone(), client, registry, AgentMode::Normal)?;
+
+    println!("{}", t("Voice mode (Ctrl+C to quit)", "语音模式（Ctrl+C 退出）"));
+    println!(
+        "{}",
+        t(
+            "configure voice backends under plugins.voice in `laozhou config`",
+            "可在 `laozhou config` 的 plugins.voice 下配置语音后端",
+        )
+    );
+
+    loop {
+        if voice_config.wake_enabled && !voice_config.wake_word.trim().is_empty() {
+            crate::voice::wake::listen_for_wake_word(&voice_config)?;
+            println!(
+                "{}",
+                t(
+                    "wake word detected",
+                    "已检测到唤醒词",
+                )
+            );
+            // 老周用语音回应一声"我在"，告诉用户已唤醒。
+            if voice_config.tts_backend != "none" {
+                let ack = t("I'm here", "我在");
+                if let Err(err) = crate::voice::tts::speak(&voice_config, ack) {
+                    eprintln!("{}: {err}", t("error", "错误"));
+                }
+            }
+        }
+        println!("{}", t("Listening... (press Enter to send / Ctrl+C to quit)", "正在录音...（按 Enter 结束 / Ctrl+C 退出）"));
+        let wav = match crate::voice::record::record_utterance(&voice_config) {
+            Ok(wav) => wav,
+            Err(err) => {
+                eprintln!("{}: {err}", t("error", "错误"));
+                continue;
+            }
+        };
+        let transcript = match crate::voice::stt::transcribe(&voice_config, &wav) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("{}: {err}", t("error", "错误"));
+                continue;
+            }
+        };
+        if transcript.is_empty() {
+            println!("{}", t("(no speech recognized)", "（未识别到语音）"));
+            continue;
+        }
+        println!("{} {transcript}", t("You:", "你："));
+        if is_exit_command(&transcript) {
+            break;
+        }
+        agent.prepare_for_turn()?;
+        let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
+        let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
+        let mut renderer = render::StreamRenderer::new(
+            reasoning_mode,
+            tool_call_mode,
+            false,
+            config.display.readable_tool_names,
+            config.display.command_output_lines,
+        );
+        let result = match agent
+            .chat_stream(&transcript, |event| handle_agent_event(&mut renderer, event))
+            .await
+        {
+            Ok(result) => result,
+            Err(err) if crate::question::is_question_cancelled(&err) => continue,
+            Err(err) => {
+                renderer.finish()?;
+                eprintln!("{}: {err}", t("error", "错误"));
+                continue;
+            }
+        };
+        renderer.finish()?;
+        if voice_config.speak_replies && !result.content.trim().is_empty() {
+            match crate::voice::tts::speak(&voice_config, &result.content) {
+                Ok(()) => {}
+                Err(err) => eprintln!("{}: {err}", t("error", "错误")),
+            }
+        }
+        let context_tokens = agent.effective_context_tokens()?;
+        handle_post_turn_overflow(&agent, &mut renderer, context_tokens, false, None).await?;
+        if args.once {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn is_exit_command(input: &str) -> bool {
+    let input = input.trim().to_lowercase();
+    ["exit", "quit", "再见", "退出", "拜拜", "不聊了"]
+        .iter()
+        .any(|word| input == *word || input.starts_with(&format!("{word} ")))
 }
 
 fn result_context_window(config: &AppConfig, result: &crate::llm::ChatResult) -> Option<usize> {

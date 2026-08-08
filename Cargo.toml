@@ -1,6 +1,6 @@
 [package]
 name = "laozhou"
-version = "26.2.0"
+version = "26.3.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/yuanjingINT/Laozhou"
@@ -29,7 +29,7 @@ fancy-regex = "0.17"
 if-addrs = "0.13"
 libc = "0.2"
 md5 = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls", "stream"] }
 rand = "0.8"
 rpassword = "7.4"
 rodio = { version = "0.19", default-features = false, features = ["mp3", "wav"] }

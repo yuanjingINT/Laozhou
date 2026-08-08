@@ -203,7 +203,7 @@ fn plugin_row(state: &str, name: &str, description: &str, width: usize) -> Strin
     fixed + &truncate(description, remaining)
 }
 
-fn plugin_names() -> [(&'static str, &'static str, &'static str); 14] {
+fn plugin_names() -> [(&'static str, &'static str, &'static str); 15] {
     [
         (
             "web",
@@ -299,6 +299,14 @@ fn plugin_names() -> [(&'static str, &'static str, &'static str); 14] {
                 "对话结束后预测下一步意图",
             ),
         ),
+        (
+            "voice",
+            t("Voice", "语音"),
+            t(
+                "Wake word, speech-to-text, text-to-speech",
+                "唤醒词、语音转文字、文字转语音",
+            ),
+        ),
     ]
 }
 
@@ -323,6 +331,7 @@ fn plugin_enabled(config: &AppConfig, index: usize) -> bool {
                 .enabled
         }
         13 => config.plugins.dream.enabled,
+        14 => config.plugins.voice.enabled,
         _ => false,
     }
 }
@@ -349,6 +358,7 @@ fn toggle_plugin(config: &mut AppConfig, index: usize) {
                 .enabled = value
         }
         13 => config.plugins.dream.enabled = value,
+        14 => config.plugins.voice.enabled = value,
         _ => {}
     }
 }
@@ -765,6 +775,99 @@ fn plugin_fields(config: &AppConfig, index: usize) -> Vec<Field> {
                 config.plugins.dream.subagent_timeout_secs.to_string(),
             ),
         ],
+        14 => vec![
+            Field::boolean(t("Enabled", "启用"), config.plugins.voice.enabled),
+            Field::new(
+                t("STT backend", "语音识别后端"),
+                config.plugins.voice.stt_backend.clone(),
+            )
+            .choices(&["whisper-cli", "xiaomi", "command", "none"]),
+            Field::new(
+                t("STT command", "语音识别命令"),
+                config.plugins.voice.stt_command.clone(),
+            ),
+            Field::new(
+                t("STT model path", "语音识别模型路径"),
+                config.plugins.voice.stt_model.clone(),
+            ),
+            Field::new(
+                t("STT language", "语音识别语言"),
+                config.plugins.voice.stt_language.clone(),
+            )
+            .choices(&["auto", "zh", "en", "ja"]),
+            Field::new(
+                t("TTS backend", "语音合成后端"),
+                config.plugins.voice.tts_backend.clone(),
+            )
+            .choices(&["espeak-ng", "piper", "xiaomi", "command", "none"]),
+            Field::new(
+                t("TTS command", "语音合成命令"),
+                config.plugins.voice.tts_command.clone(),
+            ),
+            Field::new(
+                t("TTS voice", "语音音色"),
+                config.plugins.voice.tts_voice.clone(),
+            ),
+            Field::new(
+                t("Wake word", "唤醒词"),
+                config.plugins.voice.wake_word.clone(),
+            ),
+            Field::boolean(
+                t("Enable wake word", "启用唤醒词"),
+                config.plugins.voice.wake_enabled,
+            ),
+            Field::new(
+                t("Record backend", "录音后端"),
+                config.plugins.voice.record_backend.clone(),
+            )
+            .choices(&["auto", "pw-record", "parec", "arecord"]),
+            Field::new(
+                t("Input device", "输入设备"),
+                config.plugins.voice.input_device.clone(),
+            )
+            .choices_owned(vec![
+                t("Default", "默认").to_string(),
+                "denoised_source".to_string(),
+            ]),
+            Field::new(
+                t("Max record seconds", "最大录音秒数"),
+                config.plugins.voice.max_record_seconds.to_string(),
+            ),
+            Field::new(
+                t("Silence ms", "静音判定毫秒"),
+                config.plugins.voice.silence_ms.to_string(),
+            ),
+            Field::new(
+                t("Wake window ms", "唤醒检测窗口毫秒"),
+                config.plugins.voice.wake_window_ms.to_string(),
+            ),
+            Field::boolean(
+                t("Speak replies", "朗读回复"),
+                config.plugins.voice.speak_replies,
+            ),
+            Field::new(
+                t("Xiaomi base URL", "小米 Base URL"),
+                config.plugins.voice.xiaomi_base_url.clone(),
+            ),
+            Field::new(
+                t("Xiaomi API key", "小米 API Key"),
+                config.plugins.voice.xiaomi_api_key.clone(),
+            )
+            .sensitive(),
+            Field::new(
+                t("Xiaomi STT model", "小米语音识别模型"),
+                config.plugins.voice.xiaomi_stt_model.clone(),
+            ),
+            Field::new(
+                t("Xiaomi TTS model", "小米语音合成模型"),
+                config.plugins.voice.xiaomi_tts_model.clone(),
+            ),
+            Field::new(
+                t("Xiaomi TTS voice", "小米语音音色"),
+                config.plugins.voice.xiaomi_tts_voice.clone(),
+            )
+            .choices(&crate::voice::xiaomi::XIAOMI_TTS_VOICES),
+        ],
         _ => vec![Field::boolean(
             t("Enabled", "启用"),
             plugin_enabled(config, index),
@@ -936,6 +1039,38 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 fields[3].value.trim().parse::<f64>()?.clamp(0.0, 1.0);
             config.plugins.dream.subagent_timeout_secs =
                 fields[4].value.trim().parse::<u64>()?.clamp(5, 600);
+        }
+        14 => {
+            config.plugins.voice.enabled = parse_bool_field(&fields[0].value)?;
+            config.plugins.voice.stt_backend = fields[1].value.trim().to_string();
+            config.plugins.voice.stt_command = fields[2].value.trim().to_string();
+            config.plugins.voice.stt_model = fields[3].value.trim().to_string();
+            config.plugins.voice.stt_language = fields[4].value.trim().to_string();
+            config.plugins.voice.tts_backend = fields[5].value.trim().to_string();
+            config.plugins.voice.tts_command = fields[6].value.trim().to_string();
+            config.plugins.voice.tts_voice = fields[7].value.trim().to_string();
+            config.plugins.voice.wake_word = fields[8].value.trim().to_string();
+            config.plugins.voice.wake_enabled = parse_bool_field(&fields[9].value)?;
+            config.plugins.voice.record_backend = fields[10].value.trim().to_string();
+            config.plugins.voice.input_device = match fields[11].value.trim() {
+                "denoised_source" => "denoised_source".to_string(),
+                // The "default" label (either locale) maps back to the empty
+                // device so the system default source is used.
+                "Default" | "默认" => String::new(),
+                other => other.to_string(),
+            };
+            config.plugins.voice.max_record_seconds =
+                fields[12].value.trim().parse::<u64>()?.clamp(1, 300);
+            config.plugins.voice.silence_ms =
+                fields[13].value.trim().parse::<u64>()?.clamp(100, 10_000);
+            config.plugins.voice.wake_window_ms =
+                fields[14].value.trim().parse::<u64>()?.clamp(200, 10_000);
+            config.plugins.voice.speak_replies = parse_bool_field(&fields[15].value)?;
+            config.plugins.voice.xiaomi_base_url = fields[16].value.trim().to_string();
+            config.plugins.voice.xiaomi_api_key = fields[17].value.trim().to_string();
+            config.plugins.voice.xiaomi_stt_model = fields[18].value.trim().to_string();
+            config.plugins.voice.xiaomi_tts_model = fields[19].value.trim().to_string();
+            config.plugins.voice.xiaomi_tts_voice = fields[20].value.trim().to_string();
         }
         _ => {
             let value = parse_bool_field(&fields[0].value)?;

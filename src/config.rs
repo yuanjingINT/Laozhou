@@ -345,6 +345,8 @@ pub struct PluginsConfig {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub dream: DreamPluginConfig,
+    #[serde(default)]
+    pub voice: VoicePluginConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -615,6 +617,52 @@ pub struct DiagnosticsPluginConfig {
     pub max_stderr_chars: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoicePluginConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_voice_stt_backend")]
+    pub stt_backend: String,
+    #[serde(default)]
+    pub stt_command: String,
+    #[serde(default)]
+    pub stt_model: String,
+    #[serde(default = "default_voice_stt_language")]
+    pub stt_language: String,
+    #[serde(default = "default_voice_tts_backend")]
+    pub tts_backend: String,
+    #[serde(default)]
+    pub tts_command: String,
+    #[serde(default = "default_voice_tts_voice")]
+    pub tts_voice: String,
+    #[serde(default)]
+    pub wake_word: String,
+    #[serde(default = "default_true")]
+    pub wake_enabled: bool,
+    #[serde(default = "default_voice_record_backend")]
+    pub record_backend: String,
+    #[serde(default)]
+    pub input_device: String,
+    #[serde(default = "default_voice_max_record_seconds")]
+    pub max_record_seconds: u64,
+    #[serde(default = "default_voice_silence_ms")]
+    pub silence_ms: u64,
+    #[serde(default = "default_voice_wake_window_ms")]
+    pub wake_window_ms: u64,
+    #[serde(default = "default_true")]
+    pub speak_replies: bool,
+    #[serde(default = "default_voice_xiaomi_base_url")]
+    pub xiaomi_base_url: String,
+    #[serde(default)]
+    pub xiaomi_api_key: String,
+    #[serde(default = "default_voice_xiaomi_stt_model")]
+    pub xiaomi_stt_model: String,
+    #[serde(default = "default_voice_xiaomi_tts_model")]
+    pub xiaomi_tts_model: String,
+    #[serde(default = "default_voice_xiaomi_tts_voice")]
+    pub xiaomi_tts_voice: String,
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -687,6 +735,7 @@ impl Default for PluginsConfig {
             diagnostics: DiagnosticsPluginConfig::default(),
             memory: MemoryConfig::default(),
             dream: DreamPluginConfig::default(),
+            voice: VoicePluginConfig::default(),
         }
     }
 }
@@ -902,6 +951,34 @@ impl Default for DiagnosticsPluginConfig {
             command_timeout_seconds: default_diagnostics_timeout(),
             max_stdout_chars: default_diagnostics_max_stdout_chars(),
             max_stderr_chars: default_diagnostics_max_stderr_chars(),
+        }
+    }
+}
+
+impl Default for VoicePluginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            stt_backend: default_voice_stt_backend(),
+            stt_command: String::new(),
+            stt_model: String::new(),
+            stt_language: default_voice_stt_language(),
+            tts_backend: default_voice_tts_backend(),
+            tts_command: String::new(),
+            tts_voice: default_voice_tts_voice(),
+            wake_word: String::new(),
+            wake_enabled: default_true(),
+            record_backend: default_voice_record_backend(),
+            input_device: String::new(),
+            max_record_seconds: default_voice_max_record_seconds(),
+            silence_ms: default_voice_silence_ms(),
+            wake_window_ms: default_voice_wake_window_ms(),
+            speak_replies: default_true(),
+            xiaomi_base_url: default_voice_xiaomi_base_url(),
+            xiaomi_api_key: String::new(),
+            xiaomi_stt_model: default_voice_xiaomi_stt_model(),
+            xiaomi_tts_model: default_voice_xiaomi_tts_model(),
+            xiaomi_tts_voice: default_voice_xiaomi_tts_voice(),
         }
     }
 }
@@ -1441,6 +1518,20 @@ impl AppConfig {
         }
         if !(0.0..=2.0).contains(&self.provider(None)?.temperature) {
             bail!("provider temperature must be between 0.0 and 2.0");
+        }
+        if self.plugins.voice.max_record_seconds == 0 {
+            bail!("plugins.voice.max_record_seconds must be greater than 0");
+        }
+        if self.plugins.voice.wake_window_ms == 0 {
+            bail!("plugins.voice.wake_window_ms must be greater than 0");
+        }
+        match self.plugins.voice.stt_backend.as_str() {
+            "whisper-cli" | "xiaomi" | "command" | "none" => {}
+            value => bail!("plugins.voice.stt_backend is invalid: {value}"),
+        }
+        match self.plugins.voice.tts_backend.as_str() {
+            "espeak-ng" | "piper" | "xiaomi" | "command" | "none" => {}
+            value => bail!("plugins.voice.tts_backend is invalid: {value}"),
         }
         for provider in &self.providers {
             if provider.timeout_seconds == 0 {
@@ -2365,6 +2456,54 @@ fn default_diagnostics_max_stdout_chars() -> usize {
 
 fn default_diagnostics_max_stderr_chars() -> usize {
     4_000
+}
+
+fn default_voice_stt_backend() -> String {
+    "whisper-cli".to_string()
+}
+
+fn default_voice_stt_language() -> String {
+    "auto".to_string()
+}
+
+fn default_voice_tts_backend() -> String {
+    "espeak-ng".to_string()
+}
+
+fn default_voice_tts_voice() -> String {
+    "zh".to_string()
+}
+
+fn default_voice_record_backend() -> String {
+    "auto".to_string()
+}
+
+fn default_voice_max_record_seconds() -> u64 {
+    10
+}
+
+fn default_voice_silence_ms() -> u64 {
+    800
+}
+
+fn default_voice_wake_window_ms() -> u64 {
+    1500
+}
+
+fn default_voice_xiaomi_base_url() -> String {
+    "https://api.xiaomimimo.com/v1".to_string()
+}
+
+fn default_voice_xiaomi_stt_model() -> String {
+    "mimo-v2.5-asr".to_string()
+}
+
+fn default_voice_xiaomi_tts_model() -> String {
+    "mimo-v2.5-tts".to_string()
+}
+
+fn default_voice_xiaomi_tts_voice() -> String {
+    "mimo_default".to_string()
 }
 
 fn default_calculator_backend() -> String {
