@@ -188,7 +188,7 @@ pub fn listen_for_speech(config: &VoicePluginConfig) -> Result<std::path::PathBu
 
     let backend = RecordBackend::from_config(config).resolve()?;
     let pre_roll_ms = 300u64;
-    let capture_ms = config.wake_window_ms.max(600).min(3000);
+    let capture_ms = config.wake_window_ms.clamp(600, 3000);
     let mut child = RecorderChild::spawn(backend, config)?;
     let stdout = child
         .child

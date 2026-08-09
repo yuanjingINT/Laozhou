@@ -24,6 +24,8 @@ pub enum OrbState {
 /// scrolling content area below. Supports space-to-wake and Ctrl+C to quit.
 pub struct VoiceUi {
     active: bool,
+    content_cursor: (u16, u16),
+    content_top: u16,
 }
 
 impl VoiceUi {
@@ -32,7 +34,13 @@ impl VoiceUi {
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, Hide)?;
         stdout.flush()?;
-        Ok(Self { active: true })
+        let (_, rows) = terminal::size().unwrap_or((80, 24));
+        let content_top = content_top_for(rows);
+        Ok(Self {
+            active: true,
+            content_cursor: (0, content_top),
+            content_top,
+        })
     }
 
     pub fn finish(&mut self) -> Result<()> {
@@ -67,73 +75,108 @@ impl VoiceUi {
         Ok(None)
     }
 
-    /// Draw one animation frame for the given state. `phase` advances the
-    /// animation (0..1 repeating). Returns whether the terminal size changed.
+    /// Draw one animation frame for the given state. Only the orb region is
+    /// redrawn (no full clear), so the content area below is preserved.
     pub fn render(&mut self, state: OrbState, phase: f64, status: &str) -> Result<bool> {
         let (cols, rows) = terminal::size().unwrap_or((80, 24));
         let rows = rows.max(10);
         let cols = cols.max(20);
-        let content_top = 14u16.min(rows.saturating_sub(6));
+        let content_top = self.content_top.min(rows.saturating_sub(4));
         let orb_rows = content_top.saturating_sub(2).max(7);
         let orb_radius = (orb_rows / 2).saturating_sub(1).max(2);
         let orb_col = cols.saturating_sub(1) / 2;
 
         let mut stdout = io::stdout();
         let frame = build_frame(cols, rows, orb_rows, orb_col, orb_radius, state, phase);
-        let status_line = status;
 
-        execute!(
-            stdout,
-            MoveTo(0, 0),
-            Clear(ClearType::All),
-            Hide
-        )?;
         for (row, line) in frame.iter().enumerate() {
-            execute!(stdout, MoveTo(0, row as u16), Print(line))?;
-        }
-        // Status text under the orb.
-        let status_row = orb_rows.saturating_add(1);
-        if status_row < rows {
-            let status_col = orb_col.saturating_sub(status_line.chars().count() as u16 / 2);
             execute!(
                 stdout,
-                MoveTo(status_col, status_row),
-                SetAttribute(Attribute::Dim),
-                Print(status_line),
-                SetAttribute(Attribute::Reset)
-            )?;
-        }
-        stdout.flush()?;
-        Ok(false)
-    }
-
-    /// Render a streaming content frame into the lower content area.
-    pub fn render_content(&mut self, content_top: u16, frame: &[u8]) -> Result<()> {
-        let (cols, rows) = terminal::size().unwrap_or((80, 24));
-        let rows = rows.max(10);
-        let content_top = content_top.min(rows.saturating_sub(2));
-        let mut stdout = io::stdout();
-        let text = String::from_utf8_lossy(frame);
-        let mut lines: Vec<&str> = text.lines().collect();
-        // Keep only the lines that fit below the orb.
-        let max_lines = rows.saturating_sub(content_top).saturating_sub(1) as usize;
-        if lines.len() > max_lines {
-            lines = lines.split_off(lines.len() - max_lines);
-        }
-        let _ = cols;
-        for (i, line) in lines.iter().enumerate() {
-            let row = content_top + i as u16;
-            if row >= rows {
-                break;
-            }
-            execute!(
-                stdout,
-                MoveTo(0, row),
+                MoveTo(0, row as u16),
                 Clear(ClearType::CurrentLine),
                 Print(line)
             )?;
         }
+        // Status text under the orb.
+        let status_row = orb_rows.saturating_add(1);
+        if status_row < content_top {
+            let status_col = orb_col.saturating_sub(status_line_width(status) / 2);
+            execute!(
+                stdout,
+                MoveTo(0, status_row),
+                Clear(ClearType::CurrentLine),
+                MoveTo(status_col, status_row),
+                SetAttribute(Attribute::Dim),
+                Print(status),
+                SetAttribute(Attribute::Reset)
+            )?;
+        }
+        // Restore cursor to the content area so the next content frame is
+        // written from the correct position.
+        execute!(stdout, MoveTo(self.content_cursor.0, self.content_cursor.1))?;
         stdout.flush()?;
+        Ok(false)
+    }
+
+    /// Begin a fresh content area: clear everything below the orb and reset the
+    /// content cursor to the top of the content area.
+    pub fn start_content(&mut self) -> Result<()> {
+        let (_, rows) = terminal::size().unwrap_or((80, 24));
+        let rows = rows.max(10);
+        let content_top = self.content_top.min(rows.saturating_sub(4));
+        self.content_cursor = (0, content_top);
+        let mut stdout = io::stdout();
+        for row in content_top..rows {
+            execute!(
+                stdout,
+                MoveTo(0, row),
+                Clear(ClearType::CurrentLine)
+            )?;
+        }
+        execute!(stdout, MoveTo(0, content_top))?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    /// Render a streaming content frame into the lower content area. The frame
+    /// is written verbatim (preserving all ANSI styling, tool calls, reasoning
+    /// and command output) from the tracked content cursor, then the cursor is
+    /// advanced by parsing the frame's terminal sequences.
+    pub fn render_content(&mut self, frame: &[u8]) -> Result<()> {
+        if frame.is_empty() {
+            return Ok(());
+        }
+        let (cols, rows) = terminal::size().unwrap_or((80, 24));
+        let rows = rows.max(10);
+        let cols = cols.max(1);
+        let content_top = self.content_top.min(rows.saturating_sub(4));
+        let content_bottom = rows.saturating_sub(1);
+
+        // Ensure the cursor stays within the content area.
+        let cursor = self.content_cursor;
+        let cursor = (
+            cursor.0.min(cols.saturating_sub(1)),
+            cursor.1.clamp(content_top, content_bottom),
+        );
+
+        let mut stdout = io::stdout();
+        // Scroll region covers the content area so long content scrolls there.
+        let region_top = (content_top + 1).min(rows);
+        execute!(stdout, Print(format!("\x1b[{region_top};{rows}r")))?;
+        execute!(stdout, MoveTo(cursor.0, cursor.1))?;
+        stdout.write_all(frame)?;
+        stdout.write_all(b"\x1b[r")?;
+        stdout.flush()?;
+
+        // Advance the tracked cursor by parsing the frame.
+        let layout = crate::cli::terminal_frame_layout(frame, cursor, cols, Some(content_bottom));
+        let next = layout.cursor;
+        self.content_cursor = (
+            next.0,
+            next.1
+                .max(content_top)
+                .min(if next.1 >= content_bottom { content_bottom } else { next.1 }),
+        );
         Ok(())
     }
 }
@@ -149,6 +192,7 @@ impl Drop for VoiceUi {
 /// Characters used to draw the water-wave orb (dark → light).
 const WAVE: [char; 6] = [' ', '░', '▒', '▓', '█', '█'];
 
+#[allow(clippy::needless_range_loop)] // c is used for geometry (cx) and indexing.
 fn build_frame(
     cols: u16,
     _rows: u16,
@@ -164,7 +208,7 @@ fn build_frame(
     let center_col = orb_col as f64;
     let center_row = orb_rows as f64 / 2.0;
 
-    for r in 0..orb_rows as usize {
+    for (r, row) in grid.iter_mut().enumerate() {
         let cy = r as f64 + 0.5;
         for c in 0..cols {
             let cx = c as f64 + 0.5;
@@ -180,7 +224,7 @@ fn build_frame(
                     OrbState::Speaking => 0.8 + 0.2 * (phase * std::f64::consts::TAU * 8.0).sin(),
                 };
                 let idx = ((0.5 + 0.5 * (wave * amp)).clamp(0.0, 0.999) * 5.0) as usize;
-                grid[r][c] = WAVE[idx];
+                row[c] = WAVE[idx];
             } else if dist < radius {
                 // Inner fill.
                 let idx = match state {
@@ -191,7 +235,7 @@ fn build_frame(
                         ((brightness.clamp(0.0, 0.999) * 2.0) as usize).min(2)
                     }
                 };
-                grid[r][c] = WAVE[idx];
+                row[c] = WAVE[idx];
             }
         }
     }
@@ -226,14 +270,14 @@ fn build_frame(
         for i in 0..3 {
             let progress = (phase + i as f64 / 3.0).fract();
             let ripple_r = radius + progress * 4.0;
-            for r in 0..orb_rows as usize {
+            for (r, row) in grid.iter_mut().enumerate() {
                 let cy_d = r as f64 + 0.5;
                 for c in 0..cols {
                     let cx_d = c as f64 + 0.5;
                     let d = ((cx_d - center_col).powi(2) + (cy_d - center_row).powi(2)).sqrt();
                     if (d - ripple_r).abs() < 0.45 && d > radius {
                         let idx = ((1.0 - progress) * 4.0) as usize + 1;
-                        grid[r][c] = WAVE[idx.min(5)];
+                        row[c] = WAVE[idx.min(5)];
                     }
                 }
             }
@@ -245,9 +289,14 @@ fn build_frame(
         .collect()
 }
 
-/// Keep the terminal size independent of content scroll: unused helper.
+/// The content area starts a few rows below the orb, clamped to a sane range.
 pub fn content_top_for(rows: u16) -> u16 {
-    rows.saturating_sub(6).min(14).max(10)
+    rows.saturating_sub(6).clamp(10, 14)
+}
+
+fn status_line_width(status: &str) -> u16 {
+    // Chinese and most text are width-1; count display columns conservatively.
+    status.chars().count() as u16
 }
 
 #[cfg(test)]
@@ -301,3 +350,5 @@ mod tests {
         assert!(wave_chars > 10, "Recording should draw expanding ripples");
     }
 }
+
+

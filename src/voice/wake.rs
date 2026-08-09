@@ -84,9 +84,8 @@ pub fn text_matches_wake(text: &str, wake_word: &str) -> bool {
 
 fn contains_in_order(haystack: &str, needle: &str) -> bool {
     let needle_chars: Vec<char> = needle.chars().collect();
-    let mut hay = haystack.chars().peekable();
     let mut needle_idx = 0usize;
-    while let Some(c) = hay.next() {
+    for c in haystack.chars() {
         if needle_idx < needle_chars.len() && c == needle_chars[needle_idx] {
             needle_idx += 1;
         }

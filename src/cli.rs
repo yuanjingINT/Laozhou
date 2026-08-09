@@ -2861,10 +2861,10 @@ async fn run_voice_ui(
         renderer.use_buffered_output();
         renderer.use_external_cursor_control();
 
-        // Show what the user said above the orb area's content region.
-        let content_top = crate::voice::ui::content_top_for(terminal::size().map(|(_, r)| r).unwrap_or(24));
-        let user_line = format!("{} {}", t("You:", "你："), transcript);
-        ui.render_content(content_top, user_line.as_bytes())?;
+        // Clear the content area and show what the user said.
+        ui.start_content()?;
+        let user_line = format!("{} {}\n", t("You:", "你："), transcript);
+        ui.render_content(user_line.as_bytes())?;
 
         // Streaming generation: renderer lives in an Arc<Mutex> so the event
         // callback and the UI loop can share it; the UI loop animates the orb
@@ -2918,9 +2918,9 @@ async fn run_voice_ui(
                     _ = anim.tick() => {
                         think_phase = (think_phase + 0.05).fract();
                         ui.render(OrbState::Thinking, think_phase, &t("thinking...", "思考中..."))?;
-                        if let Ok(frame) = frame_rx.try_recv() {
-                            ui.render_content(content_top, &frame)?;
-                        }
+                    if let Ok(frame) = frame_rx.try_recv() {
+                        ui.render_content(&frame)?;
+                    }
                     }
                 }
             }
@@ -4532,12 +4532,12 @@ struct LiveTailPlacement {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TerminalFrameLayout {
-    cursor: (u16, u16),
-    occupied_bottom: Option<u16>,
+pub(crate) struct TerminalFrameLayout {
+    pub(crate) cursor: (u16, u16),
+    pub(crate) occupied_bottom: Option<u16>,
 }
 
-struct TerminalFrameTracker {
+pub(crate) struct TerminalFrameTracker {
     columns: usize,
     bottom_margin: Option<usize>,
     cursor_col: usize,
@@ -4549,7 +4549,7 @@ struct TerminalFrameTracker {
 }
 
 impl TerminalFrameTracker {
-    fn new(start: (u16, u16), columns: u16, bottom_margin: Option<u16>) -> Self {
+    pub(crate) fn new(start: (u16, u16), columns: u16, bottom_margin: Option<u16>) -> Self {
         let columns = usize::from(columns.max(1));
         let cursor_col = usize::from(start.0).min(columns.saturating_sub(1));
         let cursor_row = usize::from(start.1);
@@ -4764,7 +4764,7 @@ impl VtePerform for TerminalFrameTracker {
     }
 }
 
-fn terminal_frame_layout(
+pub(crate) fn terminal_frame_layout(
     frame: &[u8],
     start: (u16, u16),
     columns: u16,
