@@ -1060,7 +1060,7 @@ fn apply_plugin_fields(config: &mut AppConfig, index: usize, fields: &[Field]) -
                 other => other.to_string(),
             };
             config.plugins.voice.max_record_seconds =
-                fields[12].value.trim().parse::<u64>()?.clamp(1, 300);
+                fields[12].value.trim().parse::<u64>()?.clamp(1, 3600);
             config.plugins.voice.silence_ms =
                 fields[13].value.trim().parse::<u64>()?.clamp(100, 10_000);
             config.plugins.voice.wake_window_ms =

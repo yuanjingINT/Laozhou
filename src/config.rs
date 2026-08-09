@@ -2479,7 +2479,7 @@ fn default_voice_record_backend() -> String {
 }
 
 fn default_voice_max_record_seconds() -> u64 {
-    10
+    300
 }
 
 fn default_voice_silence_ms() -> u64 {

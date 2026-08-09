@@ -4,15 +4,21 @@ use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
 
-pub fn speak(config: &VoicePluginConfig, text: &str) -> Result<()> {
+/// Speak `text`; `on_tick` is invoked periodically during playback so the UI
+/// can animate the orb while the assistant is speaking.
+pub fn speak_with_tick(
+    config: &VoicePluginConfig,
+    text: &str,
+    on_tick: &mut dyn FnMut(u64),
+) -> Result<()> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(());
     }
     match config.tts_backend.trim().to_ascii_lowercase().as_str() {
-        "espeak-ng" => espeak_ng(config, text),
-        "piper" => piper(config, text),
-        "xiaomi" => xiaomi(config, text),
+        "espeak-ng" => espeak_ng(config, text, on_tick),
+        "piper" => piper(config, text, on_tick),
+        "xiaomi" => xiaomi(config, text, on_tick),
         "command" => custom_command(config, text),
         "none" => Ok(()),
         other => bail!(
@@ -33,7 +39,11 @@ fn output_audio_path(extension: &str) -> std::path::PathBuf {
     ))
 }
 
-fn espeak_ng(config: &VoicePluginConfig, text: &str) -> Result<()> {
+fn espeak_ng(
+    config: &VoicePluginConfig,
+    text: &str,
+    on_tick: &mut dyn FnMut(u64),
+) -> Result<()> {
     let bin = if config.tts_command.trim().is_empty() {
         "espeak-ng"
     } else {
@@ -59,10 +69,14 @@ fn espeak_ng(config: &VoicePluginConfig, text: &str) -> Result<()> {
             )
         );
     }
-    play_file(&wav)
+    play_file(&wav, on_tick)
 }
 
-fn piper(config: &VoicePluginConfig, text: &str) -> Result<()> {
+fn piper(
+    config: &VoicePluginConfig,
+    text: &str,
+    on_tick: &mut dyn FnMut(u64),
+) -> Result<()> {
     let bin = if config.tts_command.trim().is_empty() {
         "piper"
     } else {
@@ -95,13 +109,13 @@ fn piper(config: &VoicePluginConfig, text: &str) -> Result<()> {
             )
         );
     }
-    play_file(&wav)
+    play_file(&wav, on_tick)
 }
 
-fn xiaomi(config: &VoicePluginConfig, text: &str) -> Result<()> {
+fn xiaomi(config: &VoicePluginConfig, text: &str, on_tick: &mut dyn FnMut(u64)) -> Result<()> {
     let mp3 = output_audio_path("mp3");
     crate::voice::xiaomi::synthesize(config, text, &mp3)?;
-    play_file(&mp3)
+    play_file(&mp3, on_tick)
 }
 
 fn custom_command(config: &VoicePluginConfig, text: &str) -> Result<()> {
@@ -137,7 +151,8 @@ fn custom_command(config: &VoicePluginConfig, text: &str) -> Result<()> {
         );
     }
     if out.exists() {
-        return play_file(&out);
+        let mut noop = |_: u64| {};
+        return play_file(&out, &mut noop);
     }
     // Custom commands may play audio themselves.
     Ok(())
@@ -154,7 +169,7 @@ fn shell_words(input: &str) -> Vec<String> {
         .collect()
 }
 
-fn play_file(path: &Path) -> Result<()> {
+fn play_file(path: &Path, on_tick: &mut dyn FnMut(u64)) -> Result<()> {
     let audio = std::fs::read(path).with_context(|| {
         format!(
             "{}: {}",
@@ -167,7 +182,12 @@ fn play_file(path: &Path) -> Result<()> {
     let sink = rodio::Sink::try_new(&handle)?;
     let source = rodio::Decoder::new(cursor)?;
     sink.append(source);
-    sink.sleep_until_end();
+    let mut tick = 0u64;
+    while !sink.empty() {
+        on_tick(tick);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        tick = tick.wrapping_add(1);
+    }
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 use crate::agent::{
     archive_and_delete_visible_turns, Agent, AgentEvent, AgentMode, AgentTurnControl,
 };
-use crate::config::{ActiveProviderModelConfig, AppConfig};
+use crate::config::{ActiveProviderModelConfig, AppConfig, VoicePluginConfig};
 use crate::i18n::{is_zh, text as t};
 use crate::llm::{ChatStreamChunk, OpenAiCompatibleClient, ThinkingVariantOptions};
 use crate::memory::MemoryStore;
@@ -2718,56 +2718,135 @@ async fn run_voice(paths: &LaozhouPaths, args: VoiceArgs) -> Result<()> {
         build_tool_registry(&config, paths, AgentMode::Normal, crate::question_tui::available(false))?;
     let mut agent = Agent::new(config.clone(), paths, state.clone(), client, registry, AgentMode::Normal)?;
 
-    println!("{}", t("Voice mode (Ctrl+C to quit)", "语音模式（Ctrl+C 退出）"));
-    println!(
-        "{}",
-        t(
-            "configure voice backends under plugins.voice in `laozhou config`",
-            "可在 `laozhou config` 的 plugins.voice 下配置语音后端",
-        )
-    );
+    let mut ui = crate::voice::ui::VoiceUi::start()?;
+    let result = run_voice_ui(&mut ui, &voice_config, &config, &mut agent, args).await;
+    ui.finish()?;
+    result
+}
 
+async fn run_voice_ui(
+    ui: &mut crate::voice::ui::VoiceUi,
+    voice_config: &VoicePluginConfig,
+    config: &AppConfig,
+    agent: &mut Agent,
+    args: VoiceArgs,
+) -> Result<()> {
+    use crate::voice::ui::OrbState;
+    use tokio::time::{interval, Duration as TokioDuration};
+
+    let mut phase = 0f64;
     loop {
+        // ---- Wake word phase ----
         if voice_config.wake_enabled && !voice_config.wake_word.trim().is_empty() {
-            crate::voice::wake::listen_for_wake_word(&voice_config)?;
-            println!(
-                "{}",
-                t(
-                    "wake word detected",
-                    "已检测到唤醒词",
-                )
-            );
+            let mut started = false;
+            // Background thread keeps listening for the wake word; the UI loop
+            // animates the orb and also accepts a space key as a manual wake.
+            let wake_cfg = voice_config.clone();
+            let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = crate::voice::wake::listen_for_wake_word(&wake_cfg);
+                let _ = wake_tx.send(());
+            });
+            loop {
+                phase = (phase + 0.02).fract();
+                ui.render(
+                    OrbState::Listening,
+                    phase,
+                    &t("say wake word or press space", "说出唤醒词或按空格"),
+                )?;
+                match ui.poll_space()? {
+                    Some(true) => {
+                        // Space pressed: force-wake.
+                        break;
+                    }
+                    Some(false) => {
+                        // Esc / q: quit voice mode.
+                        return Ok(());
+                    }
+                    None => {}
+                }
+                if wake_rx.recv_timeout(std::time::Duration::from_millis(60)).is_ok() {
+                    started = true;
+                    break;
+                }
+            }
+            if !started {
+                println!("{}", t("space pressed", "已按空格"));
+            }
             // 老周用语音回应一声"我在"，告诉用户已唤醒。
             if voice_config.tts_backend != "none" {
                 let ack = t("I'm here", "我在");
-                if let Err(err) = crate::voice::tts::speak(&voice_config, ack) {
+                let mut ack_phase = 0f64;
+                let mut ack_tick = 0u64;
+                let mut on_tick = |n: u64| {
+                    ack_phase = (ack_phase + 0.04).fract();
+                    let _ = ui.render(OrbState::Speaking, ack_phase, &t("I'm here", "我在"));
+                    ack_tick = n;
+                };
+                if let Err(err) = crate::voice::tts::speak_with_tick(voice_config, ack, &mut on_tick) {
                     eprintln!("{}: {err}", t("error", "错误"));
                 }
+                let _ = ack_tick;
             }
         }
-        println!("{}", t("Listening... (press Enter to send / Ctrl+C to quit)", "正在录音...（按 Enter 结束 / Ctrl+C 退出）"));
-        let wav = match crate::voice::record::record_utterance(&voice_config) {
+
+        // ---- Recording phase (user speaks) ----
+        let (tx, rx) = std::sync::mpsc::channel();
+        let record_cfg = voice_config.clone();
+        let handle = std::thread::spawn(move || {
+            let result = crate::voice::record::record_utterance(&record_cfg);
+            let _ = tx.send(result);
+        });
+        let mut rec_phase = 0f64;
+        let wav = loop {
+            rec_phase = (rec_phase + 0.03).fract();
+            ui.render(OrbState::Recording, rec_phase, &t("recording...", "正在录音..."))?;
+            // Let recording progress in the background; check for completion.
+            if let Ok(result) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                break result;
+            }
+        };
+        let _ = handle.join();
+        let wav = match wav {
             Ok(wav) => wav,
             Err(err) => {
-                eprintln!("{}: {err}", t("error", "错误"));
+                ui.render(OrbState::Listening, 0.0, &err.to_string())?;
                 continue;
             }
         };
-        let transcript = match crate::voice::stt::transcribe(&voice_config, &wav) {
+
+        // ---- STT phase ----
+        let stt_cfg = voice_config.clone();
+        let mut stt_handle = tokio::task::spawn_blocking(move || {
+            crate::voice::stt::transcribe(&stt_cfg, &wav)
+        });
+        let mut stt_phase = 0f64;
+        let transcript = loop {
+            stt_phase = (stt_phase + 0.04).fract();
+            ui.render(OrbState::Thinking, stt_phase, &t("recognizing...", "正在识别..."))?;
+            if let Ok(ready) = tokio::time::timeout(
+                TokioDuration::from_millis(50),
+                &mut stt_handle,
+            ).await {
+                break ready?;
+            }
+        };
+        let transcript = match transcript {
             Ok(text) => text,
             Err(err) => {
-                eprintln!("{}: {err}", t("error", "错误"));
+                ui.render(OrbState::Listening, 0.0, &err.to_string())?;
                 continue;
             }
         };
         if transcript.is_empty() {
-            println!("{}", t("(no speech recognized)", "（未识别到语音）"));
+            ui.render(OrbState::Listening, 0.0, &t("(no speech recognized)", "（未识别到语音）"))?;
             continue;
         }
-        println!("{} {transcript}", t("You:", "你："));
         if is_exit_command(&transcript) {
             break;
         }
+
+        // ---- Thinking / generation phase ----
         agent.prepare_for_turn()?;
         let reasoning_mode = render::ReasoningDisplayMode::from_config(&config.display.reasoning);
         let tool_call_mode = render::ToolCallDisplayMode::from_config(&config.display.tool_calls);
@@ -2778,27 +2857,101 @@ async fn run_voice(paths: &LaozhouPaths, args: VoiceArgs) -> Result<()> {
             config.display.readable_tool_names,
             config.display.command_output_lines,
         );
-        let result = match agent
-            .chat_stream(&transcript, |event| handle_agent_event(&mut renderer, event))
-            .await
-        {
+        // Buffer output so the UI can place it in the content area.
+        renderer.use_buffered_output();
+        renderer.use_external_cursor_control();
+
+        // Show what the user said above the orb area's content region.
+        let content_top = crate::voice::ui::content_top_for(terminal::size().map(|(_, r)| r).unwrap_or(24));
+        let user_line = format!("{} {}", t("You:", "你："), transcript);
+        ui.render_content(content_top, user_line.as_bytes())?;
+
+        // Streaming generation: renderer lives in an Arc<Mutex> so the event
+        // callback and the UI loop can share it; the UI loop animates the orb
+        // while frames are pushed through a channel.
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+        let mut renderer = render::StreamRenderer::new(
+            reasoning_mode,
+            tool_call_mode,
+            false,
+            config.display.readable_tool_names,
+            config.display.command_output_lines,
+        );
+        renderer.use_buffered_output();
+        renderer.use_external_cursor_control();
+        let renderer_arc = std::sync::Arc::new(std::sync::Mutex::new(renderer));
+        let result: Result<crate::llm::ChatResult> = {
+            let agent_borrow = &mut *agent;
+            let chat = {
+                let closure_renderer = renderer_arc.clone();
+                let post_renderer = renderer_arc.clone();
+                let post_tx = frame_tx.clone();
+                let closure_tx = frame_tx.clone();
+                async move {
+                    let result = agent_borrow
+                        .chat_stream(&transcript, move |event| {
+                            handle_agent_event(&mut closure_renderer.lock().unwrap(), event)?;
+                            let frame = closure_renderer.lock().unwrap().take_output_frame();
+                            if !frame.is_empty() {
+                                let _ = closure_tx.send(frame);
+                            }
+                            Ok(())
+                        })
+                        .await;
+                    let frame = post_renderer.lock().unwrap().take_output_frame();
+                    if !frame.is_empty() {
+                        let _ = post_tx.send(frame);
+                    }
+                    let _ = post_renderer.lock().unwrap().finish();
+                    result
+                }
+            };
+            tokio::pin!(chat);
+            let mut anim = interval(TokioDuration::from_millis(50));
+            let mut think_phase = 0f64;
+            loop {
+                tokio::select! {
+                    biased;
+                    outcome = &mut chat => {
+                        break outcome;
+                    }
+                    _ = anim.tick() => {
+                        think_phase = (think_phase + 0.05).fract();
+                        ui.render(OrbState::Thinking, think_phase, &t("thinking...", "思考中..."))?;
+                        if let Ok(frame) = frame_rx.try_recv() {
+                            ui.render_content(content_top, &frame)?;
+                        }
+                    }
+                }
+            }
+        };
+        let result = match result {
             Ok(result) => result,
             Err(err) if crate::question::is_question_cancelled(&err) => continue,
             Err(err) => {
-                renderer.finish()?;
                 eprintln!("{}: {err}", t("error", "错误"));
                 continue;
             }
         };
-        renderer.finish()?;
+
+        // ---- Speaking phase ----
         if voice_config.speak_replies && !result.content.trim().is_empty() {
-            match crate::voice::tts::speak(&voice_config, &result.content) {
-                Ok(()) => {}
-                Err(err) => eprintln!("{}: {err}", t("error", "错误")),
+            let mut speak_phase = 0f64;
+            let mut on_tick = |_n: u64| {
+                speak_phase = (speak_phase + 0.04).fract();
+                let _ = ui.render(OrbState::Speaking, speak_phase, &t("speaking...", "正在说话..."));
+            };
+            if let Err(err) =
+                crate::voice::tts::speak_with_tick(voice_config, &result.content, &mut on_tick)
+            {
+                eprintln!("{}: {err}", t("error", "错误"));
             }
         }
+
         let context_tokens = agent.effective_context_tokens()?;
-        handle_post_turn_overflow(&agent, &mut renderer, context_tokens, false, None).await?;
+        let mut renderer_guard = renderer_arc.lock().unwrap();
+        handle_post_turn_overflow(agent, &mut renderer_guard, context_tokens, false, None).await?;
+        drop(renderer_guard);
         if args.once {
             break;
         }

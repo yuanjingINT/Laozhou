@@ -332,7 +332,7 @@ pub fn record_utterance(config: &VoicePluginConfig) -> Result<std::path::PathBuf
     const FRAME_SAMPLES: usize = 400; // 25ms at 16kHz
 
     let backend = RecordBackend::from_config(config).resolve()?;
-    let max_seconds = config.max_record_seconds.max(1).min(30);
+    let max_seconds = config.max_record_seconds.max(1);
     let silence_ms = config.silence_ms;
     let pre_roll_ms = 250u64;
     let mut child = RecorderChild::spawn(backend, config)?;
