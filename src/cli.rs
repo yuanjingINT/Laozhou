@@ -2680,6 +2680,13 @@ async fn run_voice(paths: &LaozhouPaths, args: VoiceArgs) -> Result<()> {
     AppConfig::init_files(paths)?;
     let config = AppConfig::load_or_default(paths)?;
     let mut voice_config = config.plugins.voice.clone();
+    // Persona-driven voice defaults: wake word and TTS voice follow the active
+    // persona (Laozhou → "老周" + male voice; Miyu → "miyu"/"米哟" + female voice).
+    let (persona_wake, persona_voice) = config.persona_voice_defaults();
+    voice_config.wake_word = persona_wake;
+    if voice_config.tts_backend == "xiaomi" {
+        voice_config.xiaomi_tts_voice = persona_voice;
+    }
     if args.no_wake {
         voice_config.wake_enabled = false;
     }
@@ -2773,9 +2780,13 @@ async fn run_voice_ui(
             if !started {
                 println!("{}", t("space pressed", "已按空格"));
             }
-            // 老周用语音回应一声"我在"，告诉用户已唤醒。
+            // 用语音回应一声，告诉用户已唤醒（Miyu 说"在呢"，老周说"我在"）。
             if voice_config.tts_backend != "none" {
-                let ack = t("I'm here", "我在");
+                let ack = if voice_config.wake_word.to_lowercase().contains("miyu") {
+                    t("Here", "在呢")
+                } else {
+                    t("I'm here", "我在")
+                };
                 let mut ack_phase = 0f64;
                 let mut ack_tick = 0u64;
                 let mut on_tick = |n: u64| {

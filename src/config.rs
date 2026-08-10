@@ -2029,6 +2029,26 @@ impl AppConfig {
         self.persona_skills_dir(paths, self.prompt.active_persona.trim())
     }
 
+    /// Voice settings tuned to the active persona.
+    ///
+    /// - Laozhou (or no persona): wake word "老周", male TTS voice "苏打".
+    /// - Miyu (未有): wake words "miyu" or "米哟", female TTS voice "冰糖".
+    pub fn persona_voice_defaults(&self) -> (String, String) {
+        let persona = self.prompt.active_persona.to_lowercase();
+        let is_miyu = persona.contains("miyu") || persona.contains("未有");
+        if is_miyu {
+            (
+                "miyu,米哟".to_string(),
+                crate::default_models::XIAOMI_TTS_VOICE_MIYU.to_string(),
+            )
+        } else {
+            (
+                "老周".to_string(),
+                crate::default_models::XIAOMI_TTS_VOICE_LAOZHOU.to_string(),
+            )
+        }
+    }
+
     pub fn active_persona_prompt(&self, paths: &LaozhouPaths) -> Result<String> {
         if !self.prompt.active_persona.trim().is_empty() {
             let path = self.persona_path(paths, self.prompt.active_persona.trim());
@@ -3054,5 +3074,30 @@ mod tests {
 
             assert!(serde_json::from_value::<ProviderConfig>(provider).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod persona_voice_tests {
+    use super::*;
+
+    #[test]
+    fn miyu_persona_uses_female_voice_and_miyu_wake() {
+        let mut config = AppConfig::default();
+        config.prompt.active_persona = "未有-Miyu.md".to_string();
+        let (wake, voice) = config.persona_voice_defaults();
+        assert_eq!(wake, "miyu,米哟");
+        assert_eq!(voice, crate::default_models::XIAOMI_TTS_VOICE_MIYU);
+        assert_eq!(voice, "冰糖");
+    }
+
+    #[test]
+    fn laozhou_persona_uses_male_voice_and_laozhou_wake() {
+        let mut config = AppConfig::default();
+        config.prompt.active_persona = "".to_string();
+        let (wake, voice) = config.persona_voice_defaults();
+        assert_eq!(wake, "老周");
+        assert_eq!(voice, crate::default_models::XIAOMI_TTS_VOICE_LAOZHOU);
+        assert_eq!(voice, "苏打");
     }
 }

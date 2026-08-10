@@ -2,7 +2,9 @@ use crate::config::VoicePluginConfig;
 use crate::voice::record;
 use anyhow::Result;
 
-/// Listen for the configured wake word indefinitely until it is detected.
+/// Listen for the configured wake word(s) indefinitely until one is detected.
+/// The configured wake word may be a single phrase or a comma-separated list
+/// (e.g. "miyu,米哟") so a persona can respond to several wake phrases.
 /// Uses continuous VAD-triggered recording: the microphone is always listened
 /// to, and each complete utterance is transcribed and checked for the wake
 /// word, so nothing is missed between fixed windows.
@@ -11,16 +13,17 @@ pub fn listen_for_wake_word(config: &VoicePluginConfig) -> Result<()> {
     if !config.wake_enabled {
         return Ok(());
     }
-    let wake_word = config.wake_word.trim();
-    if wake_word.is_empty() {
+    let wake_words = wake_words(&config.wake_word);
+    if wake_words.is_empty() {
         return Ok(());
     }
 
+    let label = wake_words.join(" / ");
     eprintln!(
         "{}",
         crate::i18n::text_owned(
-            format!("Listening for wake word: \"{wake_word}\" ..."),
-            format!("正在监听唤醒词: \"{wake_word}\" ..."),
+            format!("Listening for wake word: \"{label}\" ..."),
+            format!("正在监听唤醒词: \"{label}\" ..."),
         )
     );
 
@@ -58,10 +61,20 @@ pub fn listen_for_wake_word(config: &VoicePluginConfig) -> Result<()> {
                 format!("听到: \"{text}\""),
             )
         );
-        if text_matches_wake(&text, wake_word) {
+        if wake_words.iter().any(|word| text_matches_wake(&text, word)) {
             return Ok(());
         }
     }
+}
+
+/// Split the configured wake-word field into individual phrases, trimming and
+/// dropping empties. Supports comma-separated lists.
+pub fn wake_words(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn text_matches_wake(text: &str, wake_word: &str) -> bool {
@@ -117,6 +130,17 @@ mod tests {
         assert!(!text_matches_wake("", "laozhou"));
         assert!(!text_matches_wake("周末", "老周"));
         assert!(!text_matches_wake("老", "老周"));
+    }
+
+    #[test]
+    fn supports_multiple_wake_words() {
+        assert!(text_matches_wake("Miyu，帮我看看", "miyu"));
+        assert!(text_matches_wake("米哟，在吗", "米哟"));
+        assert!(!text_matches_wake("周，在吗", "米哟"));
+        assert_eq!(
+            wake_words("miyu, 米哟 , 老周"),
+            vec!["miyu", "米哟", "老周"]
+        );
     }
 }
 
