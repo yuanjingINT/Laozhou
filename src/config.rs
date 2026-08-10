@@ -2038,12 +2038,12 @@ impl AppConfig {
         let is_miyu = persona.contains("miyu") || persona.contains("未有");
         if is_miyu {
             (
-                "miyu,米哟".to_string(),
+                "miyu,米哟,米u,你好".to_string(),
                 crate::default_models::XIAOMI_TTS_VOICE_MIYU.to_string(),
             )
         } else {
             (
-                "老周".to_string(),
+                "老周,你好".to_string(),
                 crate::default_models::XIAOMI_TTS_VOICE_LAOZHOU.to_string(),
             )
         }
@@ -3086,7 +3086,7 @@ mod persona_voice_tests {
         let mut config = AppConfig::default();
         config.prompt.active_persona = "未有-Miyu.md".to_string();
         let (wake, voice) = config.persona_voice_defaults();
-        assert_eq!(wake, "miyu,米哟");
+        assert_eq!(wake, "miyu,米哟,米u,你好");
         assert_eq!(voice, crate::default_models::XIAOMI_TTS_VOICE_MIYU);
         assert_eq!(voice, "冰糖");
     }
@@ -3096,7 +3096,7 @@ mod persona_voice_tests {
         let mut config = AppConfig::default();
         config.prompt.active_persona = "".to_string();
         let (wake, voice) = config.persona_voice_defaults();
-        assert_eq!(wake, "老周");
+        assert_eq!(wake, "老周,你好");
         assert_eq!(voice, crate::default_models::XIAOMI_TTS_VOICE_LAOZHOU);
         assert_eq!(voice, "苏打");
     }

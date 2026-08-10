@@ -136,10 +136,11 @@ mod tests {
     fn supports_multiple_wake_words() {
         assert!(text_matches_wake("Miyu，帮我看看", "miyu"));
         assert!(text_matches_wake("米哟，在吗", "米哟"));
+        assert!(text_matches_wake("米u，在吗", "米u"));
         assert!(!text_matches_wake("周，在吗", "米哟"));
         assert_eq!(
-            wake_words("miyu, 米哟 , 老周"),
-            vec!["miyu", "米哟", "老周"]
+            wake_words("miyu, 米哟 , 老周,米u"),
+            vec!["miyu", "米哟", "老周", "米u"]
         );
     }
 }
