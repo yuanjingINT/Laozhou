@@ -240,31 +240,6 @@ fn build_frame(
         }
     }
 
-    // Thinking: orbiting droplets.
-    if state == OrbState::Thinking {
-        let droplets = 5usize;
-        for i in 0..droplets {
-            let ang =
-                phase * std::f64::consts::TAU * 2.0 + i as f64 * std::f64::consts::TAU / droplets as f64;
-            let orbit = radius + 1.6;
-            let x = (center_col + orbit * ang.cos()).round() as usize;
-            let y = (center_row + orbit * ang.sin() * 0.45).round() as usize;
-            if y < orb_rows as usize && x < cols {
-                grid[y][x] = if grid[y][x] == ' ' { '●' } else { '◍' };
-            }
-        }
-    }
-
-    // Speaking: pulse dot at center.
-    if state == OrbState::Speaking {
-        let pulse = (phase * std::f64::consts::TAU * 8.0).sin() * 0.5 + 0.5;
-        let cy = center_row.round() as usize;
-        let cx = orb_col as usize;
-        if cy < orb_rows as usize && cx < cols {
-            grid[cy][cx] = if pulse > 0.6 { '◉' } else { '●' };
-        }
-    }
-
     // Recording: expanding ripple rings.
     if state == OrbState::Recording {
         for i in 0..3 {
@@ -320,22 +295,6 @@ mod tests {
     fn content_top_is_bounded() {
         assert_eq!(content_top_for(24), 14);
         assert_eq!(content_top_for(40), 14);
-    }
-
-    #[test]
-    fn thinking_state_draws_droplets() {
-        let frame = build_frame(80, 24, 12, 40, 4, OrbState::Thinking, 0.5);
-        let has_droplet = frame
-            .iter()
-            .any(|l| l.contains('●') || l.contains('◍'));
-        assert!(has_droplet, "Thinking should draw orbiting droplets");
-    }
-
-    #[test]
-    fn speaking_state_draws_center_pulse() {
-        let frame = build_frame(80, 24, 12, 40, 4, OrbState::Speaking, 0.3);
-        let has_pulse = frame.iter().any(|l| l.contains('◉') || l.contains('●'));
-        assert!(has_pulse, "Speaking should draw a center pulse");
     }
 
     #[test]
