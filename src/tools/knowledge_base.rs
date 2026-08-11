@@ -1,7 +1,5 @@
-use super::subagent_runner::{ProgressMode, SubagentProgress, SubagentRunner};
-use super::{ToolProgress, ToolRegistry, ToolSpec};
+use super::{ToolRegistry, ToolSpec};
 use crate::config::{AppConfig, KnowledgeBasePluginConfig, ProviderConfig};
-use crate::llm::OpenAiCompatibleClient;
 use crate::paths::LaozhouPaths;
 use anyhow::{bail, Context, Result};
 use chrono::Local;
@@ -15,14 +13,8 @@ use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
-const KB_SUBAGENT_PROMPT: &str = include_str!("../prompts/kb-subagent.md");
-const KB_SUBAGENT_MAX_STEPS: usize = 20;
-const KB_SUBAGENT_TOOL_TIMEOUT_SECS: u64 = 60;
-const KB_SUBAGENT_TOTAL_TIMEOUT_SECS: u64 = 120;
-
 pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
-    register_read_tool(registry, config.clone(), paths.clone());
-    register_research_tool(registry, config.clone(), paths.clone());
+    register_readonly(registry, config.clone(), paths.clone());
     if config.plugins.knowledge_base.upload_tool_enabled {
         let upload_config = config.clone();
         let upload_paths = paths.clone();
@@ -86,42 +78,10 @@ pub fn register(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPa
                 async move { tool_remove(args, config, paths).await }
             },
         ).writes());
-        let save_config = config.clone();
-        let save_paths = paths.clone();
-        registry.register(ToolSpec::new(
-            "save_search_to_kb",
-            "Summarize web search results and save to the knowledge base as a structured Markdown file. Use after web_search/web_fetch finds valuable technical info worth keeping. Automatically formats with title, problem description, solution, commands, and pitfalls.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "title": { "type": "string", "description": "Concise title for the knowledge base entry, e.g. 'NVIDIA驱动黑屏解决方法'." },
-                    "query": { "type": "string", "description": "The original search query that led to this result." },
-                    "summary": { "type": "string", "description": "Summarized key findings from the search results, in the agent's own words." },
-                    "solution": { "type": "string", "description": "Specific solution steps, commands, or configuration changes." },
-                    "commands": { "type": "string", "description": "Relevant shell commands, one per line. Optional." },
-                    "pitfalls": { "type": "string", "description": "Pitfalls and warnings, one per line. Optional." },
-                    "source_urls": { "type": "array", "items": { "type": "string" }, "description": "Source URLs referenced. Optional." },
-                    "file_name": { "type": "string", "description": "Optional custom file name (without extension). If omitted, derived from title." }
-                },
-                "required": ["title", "query", "summary", "solution"],
-                "additionalProperties": false
-            }),
-            move |args| {
-                let config = save_config.clone();
-                let paths = save_paths.clone();
-                async move { tool_save_search(args, config, paths).await }
-            },
-        ).writes());
     }
 }
 
 pub fn register_readonly(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
-    register_search_tool(registry, config.clone(), paths.clone());
-    register_find_tool(registry, config.clone(), paths.clone());
-    register_read_tool(registry, config, paths);
-}
-
-fn register_search_tool(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
     registry.register(ToolSpec::new(
         "search_knowledge_base",
         "Search the local knowledge base content. Returns file paths and original text snippets. Use read_knowledge_base_file if snippets are insufficient. Mention paths only when useful or when the user asks.",
@@ -144,9 +104,6 @@ fn register_search_tool(registry: &mut ToolRegistry, config: AppConfig, paths: L
             }
         },
     ));
-}
-
-fn register_find_tool(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
     registry.register(ToolSpec::new(
         "search_knowledge_base_by_name",
         "Find knowledge base files by file name, directory, extension, or path fragment. Returns relative paths for read_knowledge_base_file. Mention paths only when useful or when the user asks.",
@@ -169,12 +126,9 @@ fn register_find_tool(registry: &mut ToolRegistry, config: AppConfig, paths: Lao
             }
         },
     ));
-}
-
-fn register_read_tool(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
     registry.register(ToolSpec::new(
         "read_knowledge_base_file",
-        "Read a knowledge base file by relative path with line pagination. Prefer paths returned by research_knowledge_base, search_knowledge_base or search_knowledge_base_by_name. Summarize the relevant content without exposing raw tool JSON.",
+        "Read a knowledge base file by relative path with line pagination. Prefer paths returned by search_knowledge_base or search_knowledge_base_by_name. Summarize the relevant content without exposing raw tool JSON.",
         json!({
             "type": "object",
             "properties": {
@@ -195,108 +149,6 @@ fn register_read_tool(registry: &mut ToolRegistry, config: AppConfig, paths: Lao
             }
         },
     ));
-}
-
-fn register_research_tool(registry: &mut ToolRegistry, config: AppConfig, paths: LaozhouPaths) {
-    registry.register(ToolSpec::new_with_progress(
-        "research_knowledge_base",
-        "Launch a subagent to research the local knowledge base. The subagent searches content and file names, reads full files, and returns a synthesized answer with source paths. Prefer this for complex or multi-step questions.",
-        json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "The question or keywords to research in the knowledge base." },
-                "max_results": { "type": "integer", "description": "Optional result limit per search round." }
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        }),
-        move |args, progress| {
-            let config = config.clone();
-            let paths = paths.clone();
-            async move { run_research_tool(args, config, paths, progress).await }
-        },
-    ));
-}
-
-async fn run_research_tool(
-    args: Value,
-    config: AppConfig,
-    paths: LaozhouPaths,
-    progress: ToolProgress,
-) -> Result<String> {
-    ensure_enabled(&config)?;
-    let query = args
-        .get("query")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if query.is_empty() {
-        bail!("query is required");
-    }
-    let max_results = args
-        .get("max_results")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize);
-
-    let mut sub_tools = ToolRegistry::new();
-    register_readonly(&mut sub_tools, config.clone(), paths.clone());
-
-    let mode = ProgressMode::from_config(&config);
-    let sa_progress = SubagentProgress::new(progress, mode, true);
-    sa_progress.phase(if crate::i18n::is_zh() {
-        "子代理正在检索知识库".to_string()
-    } else {
-        "subagent researching knowledge base".to_string()
-    });
-
-    let client = OpenAiCompatibleClient::from_config(&config, &paths)?
-        .for_subagent_output(mode == ProgressMode::Full);
-
-    let prompt = match max_results {
-        Some(limit) => format!("{query}\n\n（每轮搜索最多返回 {limit} 条结果）"),
-        None => query.clone(),
-    };
-
-    let runner = SubagentRunner::new(client, KB_SUBAGENT_PROMPT, sub_tools, sa_progress)
-        .max_steps(KB_SUBAGENT_MAX_STEPS)
-        .timeout_seconds(KB_SUBAGENT_TOOL_TIMEOUT_SECS);
-
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(KB_SUBAGENT_TOTAL_TIMEOUT_SECS),
-        runner.run(&prompt),
-    )
-    .await;
-
-    let (state, result_text) = match outcome {
-        Ok(Ok((result, stats))) => {
-            let state = if stats.budget_reached {
-                "budget_reached"
-            } else {
-                "completed"
-            };
-            (state, result.content.trim().to_string())
-        }
-        Ok(Err(err)) => (
-            "error",
-            format!("knowledge base research error: {err:#}"),
-        ),
-        Err(_) => (
-            "timeout",
-            format!(
-                "knowledge base research timed out after {KB_SUBAGENT_TOTAL_TIMEOUT_SECS}s"
-            ),
-        ),
-    };
-
-    Ok(json!({
-        "ok": state == "completed" || state == "budget_reached",
-        "kind": "research_knowledge_base",
-        "query": query,
-        "state": state,
-        "result": result_text,
-    })
-    .to_string())
 }
 
 pub struct KnowledgeBase {
@@ -329,10 +181,6 @@ impl KnowledgeBase {
         let semantic = self.semantic_conn()?;
         init_semantic_db(&semantic)?;
         Ok(())
-    }
-
-    pub fn files_dir(&self) -> &Path {
-        &self.files_dir
     }
 
     fn readonly_available(&self) -> bool {
@@ -527,6 +375,51 @@ impl KnowledgeBase {
         self.read_file_existing(name, start_line, max_lines, false)
     }
 
+    /// Resolve a caller-supplied path to a stored record name, tolerating
+    /// omitted directory prefixes (e.g. `4. xx/文件.md` for
+    /// `default-kb/kb/4. xx/文件.md`): exact match first, then a unique
+    /// suffix match; otherwise fail with concrete candidates so the model
+    /// can self-correct in one step.
+    fn resolve_stored_name(&self, rel: &str) -> Result<String> {
+        let records = self.list_existing()?;
+        if records.iter().any(|record| record.name == rel) {
+            return Ok(rel.to_string());
+        }
+        let suffix = format!("/{rel}");
+        let matches = records
+            .iter()
+            .filter(|record| record.name.ends_with(&suffix))
+            .map(|record| record.name.clone())
+            .collect::<Vec<_>>();
+        match matches.len() {
+            1 => Ok(matches.into_iter().next().unwrap()),
+            0 => {
+                let mut scored = records
+                    .iter()
+                    .map(|record| (score_file_name(rel, &record.name).0, &record.name))
+                    .filter(|(score, _)| *score > 0.0)
+                    .collect::<Vec<_>>();
+                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                let hints = scored
+                    .iter()
+                    .take(3)
+                    .map(|(_, name)| name.as_str())
+                    .collect::<Vec<_>>();
+                if hints.is_empty() {
+                    bail!("knowledge base file not found: {rel}")
+                }
+                bail!(
+                    "knowledge base file not found: {rel}；相近的文件: {}",
+                    hints.join("、")
+                )
+            }
+            _ => bail!(
+                "path {rel} matches multiple knowledge base files: {}；请用完整路径",
+                matches.join("、")
+            ),
+        }
+    }
+
     fn read_file_existing(
         &self,
         name: &str,
@@ -534,12 +427,22 @@ impl KnowledgeBase {
         max_lines: Option<usize>,
         create_parent: bool,
     ) -> Result<String> {
-        let rel = normalize_relative_path(name)?;
-        let path = if create_parent {
-            self.safe_file_path(&rel)?
-        } else {
-            self.existing_file_path(&rel)?
+        let mut rel = normalize_relative_path(name)?;
+        let build_path = |rel: &str| -> Result<PathBuf> {
+            if create_parent {
+                self.safe_file_path(rel)
+            } else {
+                // Fails with ENOENT when the parent directory itself is
+                // missing — treat that the same as "file not found" so the
+                // prefix-tolerant resolution below still gets its chance.
+                self.existing_file_path(rel)
+            }
         };
+        let mut path = build_path(&rel).unwrap_or_default();
+        if !path.exists() {
+            rel = self.resolve_stored_name(&rel)?;
+            path = build_path(&rel)?;
+        }
         if !path.exists() {
             bail!("knowledge base file not found: {rel}")
         }
@@ -853,7 +756,7 @@ impl KnowledgeBase {
                 continue;
             };
             let score = cosine(&query_embedding, &embedding);
-            if score < self.config.plugins.knowledge_base.semantic_min_score {
+            if score < self.config.embedding.min_score {
                 continue;
             }
             results.push(SearchResult::new(
@@ -978,16 +881,17 @@ impl KnowledgeBase {
     }
 
     fn embedding_provider(&self) -> Result<Option<(ProviderConfig, String)>> {
-        let kb = &self.config.plugins.knowledge_base;
-        if kb.embedding_provider_id.trim().is_empty() || kb.embedding_model.trim().is_empty() {
+        let embedding = &self.config.embedding;
+        if !embedding.is_configured() {
             return Ok(None);
         }
         let mut provider = self
             .config
-            .provider(Some(kb.embedding_provider_id.trim()))?
+            .provider(Some(embedding.provider_id.trim()))?
             .clone();
-        provider.default_model = kb.embedding_model.trim().to_string();
-        Ok(Some((provider, kb.embedding_model.trim().to_string())))
+        let model = embedding.model.trim().to_string();
+        provider.default_model = model.clone();
+        Ok(Some((provider, model)))
     }
 
     fn meta_conn(&self) -> Result<Connection> {
@@ -1204,135 +1108,6 @@ async fn tool_upload(args: Value, config: AppConfig, paths: LaozhouPaths) -> Res
     .to_string())
 }
 
-async fn tool_save_search(args: Value, config: AppConfig, paths: LaozhouPaths) -> Result<String> {
-    ensure_enabled(&config)?;
-    if !config.plugins.knowledge_base.upload_tool_enabled {
-        bail!("knowledge base upload tool is disabled")
-    }
-    let title = args
-        .get("title")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if title.is_empty() {
-        bail!("title is required")
-    }
-    let query = args
-        .get("query")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    let summary = args
-        .get("summary")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if summary.is_empty() {
-        bail!("summary is required")
-    }
-    let solution = args
-        .get("solution")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if solution.is_empty() {
-        bail!("solution is required")
-    }
-    let commands = args
-        .get("commands")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    let pitfalls = args
-        .get("pitfalls")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    let source_urls: Vec<String> = args
-        .get("source_urls")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let file_name = args
-        .get("file_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-
-    let slug_name = if file_name.is_empty() {
-        slug(title)
-    } else {
-        slug(file_name)
-    };
-    let rel = format!(
-        "search_notes/{}/{}.md",
-        Local::now().format("%Y-%m"),
-        slug_name
-    );
-
-    let mut body = format!(
-        "# {}\n\n> 来源：网络搜索总结\n> 搜索关键词：{}\n> 保存时间：{}\n\n## 问题描述\n\n{}\n\n## 解决方案\n\n{}\n\n",
-        title,
-        query,
-        Local::now().format("%Y-%m-%d %H:%M:%S"),
-        summary,
-        solution,
-    );
-
-    if !commands.is_empty() {
-        body.push_str("## 命令\n\n```bash\n");
-        body.push_str(commands);
-        body.push_str("\n```\n\n");
-    }
-
-    if !pitfalls.is_empty() {
-        body.push_str("## 踩坑点\n\n");
-        for line in pitfalls.lines() {
-            let line = line.trim();
-            if !line.is_empty() {
-                body.push_str(&format!("- {}\n", line));
-            }
-        }
-        body.push('\n');
-    }
-
-    if !source_urls.is_empty() {
-        body.push_str("## 参考来源\n\n");
-        for url in &source_urls {
-            body.push_str(&format!("- {}\n", url));
-        }
-        body.push('\n');
-    }
-
-    let kb = KnowledgeBase::new(config, paths)?;
-    kb.init()?;
-
-    let existing = kb.files_dir().join(&rel);
-    let overwritten = existing.exists();
-
-    let temp = tempfile::NamedTempFile::new()?;
-    std::fs::write(temp.path(), body.as_bytes())?;
-    let saved = kb.import_file(temp.path(), &rel)?;
-    kb.spawn_embedding_reindex()?;
-
-    Ok(json!({
-        "ok": true,
-        "path": saved,
-        "title": title,
-        "overwritten": overwritten,
-        "note": if overwritten {
-            "已覆盖同名文件"
-        } else {
-            "新建知识库条目"
-        },
-    })
-    .to_string())
-}
-
 async fn tool_edit(args: Value, config: AppConfig, paths: LaozhouPaths) -> Result<String> {
     ensure_enabled(&config)?;
     let name = args
@@ -1407,22 +1182,19 @@ pub async fn embed_text(
     text: &str,
 ) -> Result<Vec<f32>> {
     let api_key = provider.api_key.as_deref().unwrap_or_default().trim();
-    if api_key.is_empty() && !provider.is_local_endpoint() {
+    if api_key.is_empty() {
         bail!("embedding provider {} has no api_key", provider.id)
     }
     let client = Client::builder()
-        .timeout(Duration::from_secs(
-            config.plugins.knowledge_base.embedding_timeout_seconds,
-        ))
+        .timeout(Duration::from_secs(config.embedding.timeout_seconds.max(1)))
         .build()?;
     let url = format!("{}/embeddings", provider.base_url.trim_end_matches('/'));
-    let mut request = client
+    let response = client
         .post(&url)
-        .json(&json!({ "model": model, "input": text }));
-    if !api_key.is_empty() {
-        request = request.bearer_auth(api_key);
-    }
-    let response = request.send().await?;
+        .bearer_auth(api_key)
+        .json(&json!({ "model": model, "input": text }))
+        .send()
+        .await?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
@@ -1779,13 +1551,7 @@ fn unix_time(time: SystemTime) -> f64 {
 fn expand_path(value: &str) -> PathBuf {
     if let Some(rest) = value.trim().strip_prefix("~/") {
         if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
-            let expanded = home.join(rest);
-            // 二次校验：展开后必须仍在 home 目录内，防止符号链接逃逸
-            // fail-closed：canonicalize 失败时返回 home 目录本身，而非未校验路径
-            match expanded.canonicalize() {
-                Ok(canonical) if canonical.starts_with(&home) => return canonical,
-                _ => return home,
-            }
+            return home.join(rest);
         }
     }
     PathBuf::from(value.trim())
@@ -1813,98 +1579,6 @@ fn slug(value: &str) -> String {
     } else {
         slug.chars().take(48).collect()
     }
-}
-
-pub async fn auto_save_web_tool(
-    config: AppConfig,
-    paths: LaozhouPaths,
-    tool_name: &str,
-    args: &str,
-    output: &str,
-) {
-    let kb_config = &config.plugins.knowledge_base;
-    if !kb_config.enabled || !kb_config.auto_save_web {
-        return;
-    }
-    let max_chars = kb_config.auto_save_web_max_chars.max(500);
-    let source = if tool_name == "web_fetch" {
-        url_from_args(args).unwrap_or_else(|| tool_name.to_string())
-    } else {
-        query_from_args(args).unwrap_or_else(|| tool_name.to_string())
-    };
-    let title = if tool_name == "web_fetch" {
-        format!("网页抓取：{}", clip_title(&source))
-    } else {
-        format!("联网搜索：{}", clip_title(&source))
-    };
-    let body_content = {
-        let total = output.chars().count();
-        if total > max_chars {
-            output.chars().take(max_chars).collect::<String>()
-        } else {
-            output.to_string()
-        }
-    };
-    let body = format!(
-        "# {title}\n\n> 来源：联网内容自动保存\n> 工具：{tool_name}\n> 时间：{}\n\n{}",
-        Local::now().format("%Y-%m-%d %H:%M:%S"),
-        body_content,
-    );
-    let date_dir = Local::now().format("%Y-%m-%d");
-    let hash = &sha256_hex(body.as_bytes())[..8];
-    let rel = format!("auto_web/{date_dir}/{}-{hash}.md", slug(&source));
-    let kb = match KnowledgeBase::new(config.clone(), paths.clone()) {
-        Ok(kb) => kb,
-        Err(err) => {
-            tracing::debug!("auto save web: init failed: {err:#}");
-            return;
-        }
-    };
-    let result = (|| -> Result<String> {
-        kb.init()?;
-        let temp = tempfile::NamedTempFile::new()?;
-        std::fs::write(temp.path(), body.as_bytes())?;
-        kb.import_file(temp.path(), &rel)
-    })();
-    if let Err(err) = result {
-        tracing::debug!("auto save web to knowledge base failed: {err:#}");
-    }
-}
-
-fn clip_title(value: &str) -> String {
-    let text = value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    text.chars().take(120).collect()
-}
-
-fn query_from_args(args: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(args).ok()?;
-    parsed
-        .get("query")
-        .and_then(Value::as_str)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn url_from_args(args: &str) -> Option<String> {
-    let parsed: Value = serde_json::from_str(args).ok()?;
-    let url = parsed
-        .get("url")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
-    }
-    Some(
-        url.strip_prefix("https://")
-            .or_else(|| url.strip_prefix("http://"))
-            .and_then(|rest| rest.split('/').next())
-            .unwrap_or(url)
-            .to_string(),
-    )
 }
 
 #[cfg(test)]
@@ -1986,85 +1660,5 @@ mod tests {
         let error = kb.edit_lines("note.md", 2, 2, "two").unwrap_err();
 
         assert!(error.to_string().contains("out of range"));
-    }
-
-    #[test]
-    fn register_exposes_research_tool_but_not_direct_search_to_main_agent() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = test_paths(temp.path());
-        let config = AppConfig::default();
-        let mut registry = ToolRegistry::new();
-        register(&mut registry, config.clone(), paths.clone());
-
-        assert!(registry.tool_names().contains(&"research_knowledge_base".to_string()));
-        assert!(registry.tool_names().contains(&"read_knowledge_base_file".to_string()));
-        assert!(!registry.tool_names().contains(&"search_knowledge_base".to_string()));
-        assert!(!registry
-            .tool_names()
-            .contains(&"search_knowledge_base_by_name".to_string()));
-
-        let mut readonly = ToolRegistry::new();
-        register_readonly(&mut readonly, config, paths);
-        assert!(readonly.tool_names().contains(&"search_knowledge_base".to_string()));
-        assert!(readonly
-            .tool_names()
-            .contains(&"search_knowledge_base_by_name".to_string()));
-    }
-
-    #[test]
-    fn auto_save_web_tool_skips_when_disabled() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = test_paths(temp.path());
-        let mut config = AppConfig::default();
-        config.plugins.knowledge_base.auto_save_web = false;
-
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        runtime.block_on(async {
-            auto_save_web_tool(
-                config,
-                paths.clone(),
-                "web_fetch",
-                r#"{"url":"https://example.com/a"}"#,
-                "some content",
-            )
-            .await;
-        });
-
-        assert!(!paths.data_dir.join("kb/files").exists());
-    }
-
-    #[test]
-    fn auto_save_web_tool_writes_file_when_enabled() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = test_paths(temp.path());
-        let mut config = AppConfig::default();
-        config.plugins.knowledge_base.auto_save_web = true;
-
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        runtime.block_on(async {
-            auto_save_web_tool(
-                config,
-                paths.clone(),
-                "web_fetch",
-                r#"{"url":"https://example.com/a"}"#,
-                "auto-saved content",
-            )
-            .await;
-        });
-
-        let files_dir = paths.data_dir.join("kb/files/auto_web");
-        let entries = std::fs::read_dir(&files_dir).unwrap().count();
-        assert_eq!(entries, 1);
-        let today = Local::now().format("%Y-%m-%d");
-        let day_dir = files_dir.join(today.to_string());
-        let file = std::fs::read_dir(day_dir)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let content = std::fs::read_to_string(file).unwrap();
-        assert!(content.contains("网页抓取"));
-        assert!(content.contains("auto-saved content"));
     }
 }

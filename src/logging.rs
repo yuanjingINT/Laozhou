@@ -1,3 +1,4 @@
+use crate::i18n::text as t;
 use crate::paths::LaozhouPaths;
 use anyhow::{Context, Result};
 use tracing::level_filters::LevelFilter;
@@ -8,7 +9,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
 
-const LOG_ENV: &str = "LAOZHOU_LOG";
+const LOG_ENV: &str = "MIYU_LOG";
 const LOG_FILE_LIMIT: usize = 8;
 const LOG_BUFFERED_LINES_LIMIT: usize = 1_024;
 
@@ -41,10 +42,11 @@ pub fn init(paths: &LaozhouPaths, cli_debug: bool) -> Result<LoggingGuard> {
         .finish(appender);
     let targets = Targets::new()
         .with_default(LevelFilter::OFF)
-        .with_target("laozhou", level);
+        .with_target("laozhou", level)
+        .with_target("laozhou::qq", qq_level(level, cli_debug, env_value.is_some()));
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
-        .with_target(false)
+        .with_target(true)
         .with_writer(writer)
         .with_filter(targets);
     tracing_subscriber::registry()
@@ -55,17 +57,30 @@ pub fn init(paths: &LaozhouPaths, cli_debug: bool) -> Result<LoggingGuard> {
     if invalid_env {
         tracing::error!(
             variable = LOG_ENV,
-            "invalid log level ignored; expected off, error, warn, info, debug, or trace"
+            "{}",
+            t(
+                "invalid log level ignored; expected off, error, warn, info, debug, or trace",
+                "已忽略无效日志级别；应为 off、error、warn、info、debug 或 trace"
+            )
         );
     }
     tracing::debug!(
         level = %level,
         log_dir = %logs_dir.display(),
-        "debug logging initialized"
+        "{}",
+        t("debug logging initialized", "调试日志已初始化")
     );
     Ok(LoggingGuard {
         _worker: Some(worker),
     })
+}
+
+fn qq_level(level: LevelFilter, cli_debug: bool, explicit_env: bool) -> LevelFilter {
+    if level == LevelFilter::OFF || explicit_env || cli_debug {
+        level
+    } else {
+        LevelFilter::INFO
+    }
 }
 
 fn selected_level(cli_debug: bool, env_value: Option<&str>) -> (LevelFilter, bool) {
@@ -109,6 +124,10 @@ mod tests {
     #[test]
     fn default_level_only_records_errors() {
         assert_eq!(selected_level(false, None), (LevelFilter::ERROR, false));
+        assert_eq!(
+            qq_level(LevelFilter::ERROR, false, false),
+            LevelFilter::INFO
+        );
     }
 
     #[test]
@@ -121,6 +140,10 @@ mod tests {
         assert_eq!(
             selected_level(true, Some("info")),
             (LevelFilter::INFO, false)
+        );
+        assert_eq!(
+            qq_level(LevelFilter::ERROR, false, true),
+            LevelFilter::ERROR
         );
     }
 

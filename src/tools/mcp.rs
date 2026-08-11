@@ -123,12 +123,7 @@ impl McpSession {
         if server.command.trim().is_empty() {
             bail!("MCP server {} has no command", server.id);
         }
-        // 校验命令路径：只允许绝对路径或 PATH 中的可执行文件，禁止 shell 元字符
-        let cmd = server.command.trim();
-        if cmd.contains(|c: char| matches!(c, ';' | '|' | '&' | '`' | '$' | '(' | ')' | '{' | '}' | '<' | '>' | '\n' | '\r')) {
-            bail!("MCP server {} command contains illegal characters", server.id);
-        }
-        let mut command = Command::new(cmd);
+        let mut command = Command::new(&server.command);
         command.args(&server.args);
         for (key, value) in &server.env {
             command.env(key, value);

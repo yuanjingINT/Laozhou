@@ -4,17 +4,112 @@ use crate::i18n::agent_text as t;
 use crate::paths::LaozhouPaths;
 use crate::prompts::MEME_DESCRIPTION_PROMPT;
 use anyhow::{bail, Context, Result};
+use image::AnimationDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::io::{BufReader, Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::SystemTime;
 
 const BUILTIN_MEMES_DIR: &str = "/usr/share/laozhou/memes";
 const MIN_SHORT_MEME_ID_LEN: usize = 7;
 
 static MEME_LIBRARY_CACHE: OnceLock<RwLock<Option<MemeLibraryCache>>> = OnceLock::new();
+static MEME_LIBRARY_LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+const MIN_IMAGE_EDGE: u32 = 32;
+const MAX_IMAGE_EDGE: u32 = 4096;
+const MAX_IMAGE_PIXELS: u64 = 16_000_000;
+const MAX_GIF_FRAMES: usize = 120;
+const MAX_GIF_DURATION_MS: u64 = 15_000;
+const MAX_NAME_CHARS: usize = 80;
+const MAX_DESCRIPTION_CHARS: usize = 500;
+const MAX_USAGE_CHARS: usize = 500;
+const MAX_AVOID_CHARS: usize = 500;
+const MAX_TAGS: usize = 16;
+const MAX_TAG_CHARS: usize = 40;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MemeRef {
+    pub(crate) library: String,
+    pub(crate) id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum MemeCollectionOutcome {
+    Accepted { meme: MemeRef },
+    Rejected { reason: String },
+    AlreadyExists { meme: MemeRef },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemeClassification {
+    save: bool,
+    confidence: u8,
+    positive_gates: PositiveGates,
+    risk_gates: RiskGates,
+    name: LocalizedName,
+    description: String,
+    usage: String,
+    avoid: String,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PositiveGates {
+    chat_reaction: bool,
+    emotion_or_meme: bool,
+    reusable: bool,
+    context_independent: bool,
+    persona_fit: bool,
+    meaning_clear: bool,
+    visual_quality: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RiskGates {
+    ordinary_photo: bool,
+    informational_content: bool,
+    privacy: bool,
+    advertisement: bool,
+    unsafe_or_abusive: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidatedImageFormat {
+    Jpeg,
+    Png,
+    Gif,
+    Webp,
+}
+
+impl ValidatedImageFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::Gif => "gif",
+            Self::Webp => "webp",
+        }
+    }
+
+    fn mime(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+            Self::Gif => "image/gif",
+            Self::Webp => "image/webp",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct MemeIndex {
@@ -41,9 +136,36 @@ struct MemeItem {
     avoid: String,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<MemeOrigin>,
+}
+
+/// 表情包的收集来源：从哪个平台会话、谁发的、什么时候发/收的。
+/// 本地 add_meme 入库的表情没有该字段。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct MemeOrigin {
+    #[serde(default)]
+    pub(crate) platform: String,
+    #[serde(default)]
+    pub(crate) conversation_kind: String,
+    #[serde(default)]
+    pub(crate) conversation_id: String,
+    #[serde(default)]
+    pub(crate) sender_id: String,
+    #[serde(default)]
+    pub(crate) sender_name: String,
+    #[serde(default)]
+    pub(crate) message_id: String,
+    /// 消息发送时刻（RFC3339；平台未提供时为空）
+    #[serde(default)]
+    pub(crate) sent_at: String,
+    /// 入库时刻（RFC3339）
+    #[serde(default)]
+    pub(crate) collected_at: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LocalizedName {
     #[serde(default)]
     zh: String,
@@ -302,6 +424,7 @@ async fn search_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> R
                 "tags": meme.item.tags,
                 "animated": meme.item.animated,
                 "source": source_label(meme.source),
+                "origin": meme.item.origin,
             })
         })
         .collect::<Vec<_>>();
@@ -330,18 +453,26 @@ async fn show_meme(
     let size = meme_print_size(&args, &config.plugins.memes);
     progress.report_image(meme.path.clone(), meme.item.description.clone());
     if progress.prepare_for_external_output().await {
-        vision::print_image_file(&meme.path, size).await?;
+        if meme.item.animated {
+            let preview = static_gif_preview(&meme.path).await?;
+            vision::print_image_file(preview.path(), size).await?;
+        } else {
+            vision::print_image_file(&meme.path, size).await?;
+        }
     }
     Ok(json!({
         "success": true,
         "id": unique_short_id_from_ids(&ids, &meme.item.id),
         "description": meme.item.description,
+        "origin": meme.item.origin,
     })
     .to_string())
 }
 
 async fn add_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> Result<String> {
     let library = selected_library(&args, config);
+    let library_lock = library_lock(&library);
+    let _guard = library_lock.lock().await;
     let source = expand_path(required_str(&args, "image")?);
     let metadata = std::fs::metadata(&source)
         .with_context(|| format!("failed to stat image {}", source.display()))?;
@@ -376,9 +507,10 @@ async fn add_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> Resu
         })
         .to_string());
     }
-    let ext = image_ext(&source)?;
-    let mime_type = mime_from_ext(ext)?;
-    let animated = ext == "gif";
+    let format = validate_image_bytes(&bytes)?;
+    let ext = format.extension();
+    let mime_type = format.mime().to_string();
+    let animated = format == ValidatedImageFormat::Gif;
     let user_dir = user_library_dir(paths, &library);
     let images_dir = user_dir.join("images");
     std::fs::create_dir_all(&images_dir)?;
@@ -392,22 +524,41 @@ async fn add_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> Resu
         )
     })?;
     let mut item = if has_supplied_metadata(&args) {
-        item_from_args(
+        match item_from_args(
             &args,
             id.clone(),
             format!("images/{target_file}"),
             mime_type,
             animated,
-        )?
+        ) {
+            Ok(item) => item,
+            Err(error) => {
+                let _ = std::fs::remove_file(&target);
+                return Err(error);
+            }
+        }
     } else {
-        match describe_meme_image(config, paths, &source).await {
-            Ok(metadata) => item_from_metadata(
+        match classify_meme_image(config, paths, &target).await {
+            Ok(classification) => match item_from_classification(
                 id.clone(),
                 format!("images/{target_file}"),
                 mime_type,
                 animated,
-                metadata,
-            )?,
+                classification,
+                None,
+            ) {
+                Ok(item) => item,
+                Err(err) => {
+                    let _ = std::fs::remove_file(&target);
+                    return Ok(json!({
+                        "success": false,
+                        "rejected": true,
+                        "message": "vision classification rejected the image",
+                        "error": err.to_string(),
+                    })
+                    .to_string());
+                }
+            },
             Err(err) => {
                 let _ = std::fs::remove_file(&target);
                 return Ok(json!({
@@ -432,7 +583,10 @@ async fn add_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> Resu
     index.disabled_ids.retain(|value| !ids_match(value, &id));
     index.memes.retain(|meme| !ids_match(&meme.id, &id));
     index.memes.push(item.clone());
-    save_index(&user_dir.join("index.json"), &index)?;
+    if let Err(error) = save_index(&user_dir.join("index.json"), &index) {
+        let _ = std::fs::remove_file(&target);
+        return Err(error);
+    }
     Ok(json!({
         "success": true,
         "library": library,
@@ -446,6 +600,8 @@ async fn add_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> Resu
 
 async fn update_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> Result<String> {
     let library = selected_library(&args, config);
+    let library_lock = library_lock(&library);
+    let _guard = library_lock.lock().await;
     let id = required_str(&args, "id")?;
     let existing =
         find_meme(paths, &library, id)?.with_context(|| format!("meme not found: {id}"))?;
@@ -484,6 +640,8 @@ async fn update_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> R
 
 async fn delete_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> Result<String> {
     let library = selected_library(&args, config);
+    let library_lock = library_lock(&library);
+    let _guard = library_lock.lock().await;
     let requested_id = required_str(&args, "id")?;
     let user_dir = user_library_dir(paths, &library);
     let index_path = user_dir.join("index.json");
@@ -532,13 +690,159 @@ async fn delete_meme(args: Value, config: &AppConfig, paths: &LaozhouPaths) -> R
     bail!("meme not found: {requested_id}")
 }
 
-async fn describe_meme_image(config: &AppConfig, paths: &LaozhouPaths, image: &Path) -> Result<Value> {
-    let text =
-        vision::analyze_local_image_with_prompt(config, paths, image, MEME_DESCRIPTION_PROMPT)
-            .await?;
-    let start = text.find('{').unwrap_or(0);
-    let end = text.rfind('}').map(|index| index + 1).unwrap_or(text.len());
-    Ok(serde_json::from_str(&text[start..end])?)
+async fn classify_meme_image(
+    config: &AppConfig,
+    paths: &LaozhouPaths,
+    image: &Path,
+) -> Result<MemeClassification> {
+    let persona = config.active_persona_prompt(paths).unwrap_or_default();
+    let persona = persona.chars().take(4_000).collect::<String>();
+    let prompt = if persona.trim().is_empty() {
+        MEME_DESCRIPTION_PROMPT.to_string()
+    } else {
+        format!(
+            "{MEME_DESCRIPTION_PROMPT}\n\n## 当前人格约束\n仅当图片明确符合以下人格时，persona_fit 才能为 true：\n{persona}"
+        )
+    };
+    let text = vision::analyze_local_image_with_prompt(config, paths, image, &prompt).await?;
+    let classification: MemeClassification = serde_json::from_str(text.trim())
+        .context("vision response was not the strict meme schema")?;
+    validate_classification(&classification)?;
+    Ok(classification)
+}
+
+pub(crate) async fn collect_meme_from_local_image(
+    image: &Path,
+    config: &AppConfig,
+    paths: &LaozhouPaths,
+    origin: Option<MemeOrigin>,
+) -> Result<MemeCollectionOutcome> {
+    let library = current_persona_library(config);
+    let image = image.to_path_buf();
+    let max_bytes = config
+        .plugins
+        .memes
+        .max_image_mb
+        .saturating_mul(1024 * 1024);
+    let prepared = match tokio::task::spawn_blocking(move || prepare_image(&image, max_bytes))
+        .await
+        .context("image validation task failed")?
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return Ok(MemeCollectionOutcome::Rejected {
+                reason: error.to_string(),
+            })
+        }
+    };
+    let meme_ref = MemeRef {
+        library: library.clone(),
+        id: prepared.id.clone(),
+    };
+    if find_meme(paths, &library, &prepared.id)?.is_some() {
+        return Ok(MemeCollectionOutcome::AlreadyExists { meme: meme_ref });
+    }
+
+    let vision_input = tempfile::Builder::new()
+        .suffix(&format!(".{}", prepared.format.extension()))
+        .tempfile()?;
+    std::fs::copy(&prepared.source, vision_input.path())?;
+    let classification = match classify_meme_image(config, paths, vision_input.path()).await {
+        Ok(classification) => classification,
+        Err(error) => {
+            return Ok(MemeCollectionOutcome::Rejected {
+                reason: error.to_string(),
+            })
+        }
+    };
+    if !classification.save {
+        return Ok(MemeCollectionOutcome::Rejected {
+            reason: "vision classification rejected the image".to_string(),
+        });
+    }
+
+    let lock = library_lock(&library);
+    let _guard = lock.lock().await;
+    if find_meme(paths, &library, &prepared.id)?.is_some() {
+        return Ok(MemeCollectionOutcome::AlreadyExists { meme: meme_ref });
+    }
+    let user_dir = user_library_dir(paths, &library);
+    let images_dir = user_dir.join("images");
+    std::fs::create_dir_all(&images_dir)?;
+    let target_file = format!("{}.{}", &prepared.hash[..16], prepared.format.extension());
+    let target = images_dir.join(&target_file);
+    std::fs::copy(&prepared.source, &target).with_context(|| {
+        format!(
+            "failed to copy image {} to {}",
+            prepared.source.display(),
+            target.display()
+        )
+    })?;
+    let origin = origin.map(|mut origin| {
+        origin.collected_at = chrono::Utc::now().to_rfc3339();
+        origin
+    });
+    let item = match item_from_classification(
+        prepared.id.clone(),
+        format!("images/{target_file}"),
+        prepared.format.mime().to_string(),
+        prepared.format == ValidatedImageFormat::Gif,
+        classification,
+        origin,
+    ) {
+        Ok(item) => item,
+        Err(error) => {
+            let _ = std::fs::remove_file(&target);
+            return Ok(MemeCollectionOutcome::Rejected {
+                reason: error.to_string(),
+            });
+        }
+    };
+    let mut index = load_index(&user_dir.join("index.json"))?.unwrap_or_else(|| MemeIndex {
+        library: library.clone(),
+        version: 2,
+        memes: Vec::new(),
+        disabled_ids: Vec::new(),
+    });
+    index.library = library.clone();
+    index.version = 2;
+    index
+        .disabled_ids
+        .retain(|value| !ids_match(value, &prepared.id));
+    index.memes.push(item);
+    if let Err(error) = save_index(&user_dir.join("index.json"), &index) {
+        let _ = std::fs::remove_file(&target);
+        return Err(error);
+    }
+    Ok(MemeCollectionOutcome::Accepted { meme: meme_ref })
+}
+
+struct PreparedImage {
+    source: PathBuf,
+    hash: String,
+    id: String,
+    format: ValidatedImageFormat,
+}
+
+fn prepare_image(source: &Path, max_bytes: u64) -> Result<PreparedImage> {
+    let metadata = std::fs::metadata(source)
+        .with_context(|| format!("failed to stat image {}", source.display()))?;
+    if !metadata.is_file() {
+        bail!("image path is not a file: {}", source.display())
+    }
+    if metadata.len() > max_bytes {
+        bail!("image exceeds the configured meme size limit")
+    }
+    let bytes = std::fs::read(source)
+        .with_context(|| format!("failed to read image {}", source.display()))?;
+    let format = validate_image_bytes(&bytes)?;
+    let hash = format!("{:x}", Sha256::digest(&bytes));
+    Ok(PreparedImage {
+        source: source.to_path_buf(),
+        id: format!("sha256:{hash}"),
+        hash,
+        format,
+    })
 }
 
 fn load_library(paths: &LaozhouPaths, library: &str) -> Result<Vec<LoadedMeme>> {
@@ -672,9 +976,16 @@ fn load_index(path: &Path) -> Result<Option<MemeIndex>> {
 fn save_index(path: &Path, index: &MemeIndex) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        serde_json::to_writer_pretty(&mut temp, index)?;
+        temp.write_all(b"\n")?;
+        temp.as_file().sync_all()?;
+        temp.persist(path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("atomically replacing meme index {}", path.display()))?;
+        return Ok(());
     }
-    std::fs::write(path, serde_json::to_string_pretty(index)?)?;
-    Ok(())
+    bail!("meme index path has no parent: {}", path.display())
 }
 
 fn selected_library(args: &Value, config: &AppConfig) -> String {
@@ -683,12 +994,55 @@ fn selected_library(args: &Value, config: &AppConfig) -> String {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(sanitize_library)
-        .unwrap_or_else(|| {
-            config
-                .plugins
-                .memes
-                .library_for_persona(&config.prompt.active_persona)
-        })
+        .unwrap_or_else(|| current_persona_library(config))
+}
+
+pub(crate) fn current_persona_library(config: &AppConfig) -> String {
+    sanitize_library(
+        &config
+            .plugins
+            .memes
+            .library_for_persona(&config.prompt.active_persona),
+    )
+}
+
+pub(crate) fn meme_ref_exists(paths: &LaozhouPaths, meme: &MemeRef) -> Result<bool> {
+    Ok(find_meme(paths, &meme.library, &meme.id)?.is_some())
+}
+
+pub(crate) async fn delete_meme_reference(
+    meme: &MemeRef,
+    config: &AppConfig,
+    paths: &LaozhouPaths,
+) -> Result<()> {
+    let result = delete_meme(
+        json!({
+            "library": meme.library,
+            "id": meme.id,
+            "hard_delete": false,
+        }),
+        config,
+        paths,
+    )
+    .await?;
+    let result: Value = serde_json::from_str(&result)?;
+    if result.get("success").and_then(Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        bail!("meme deletion did not succeed")
+    }
+}
+
+fn library_lock(library: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let key = sanitize_library(library);
+    let mut locks = MEME_LIBRARY_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    locks
+        .entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 fn sanitize_library(value: &str) -> String {
@@ -712,7 +1066,7 @@ fn sanitize_library(value: &str) -> String {
 }
 
 fn builtin_library_dir(library: &str) -> PathBuf {
-    if let Some(path) = std::env::var_os("LAOZHOU_MEMES_DIR") {
+    if let Some(path) = std::env::var_os("MIYU_MEMES_DIR") {
         return PathBuf::from(path).join(library);
     }
     let dev = PathBuf::from("src/memes").join(library);
@@ -826,6 +1180,165 @@ fn normalize(value: &str) -> String {
         .collect::<String>()
 }
 
+fn validate_classification(classification: &MemeClassification) -> Result<()> {
+    if !classification.save {
+        return Ok(());
+    }
+    if classification.confidence != 100 {
+        bail!("accepted meme classification confidence must be exactly 100")
+    }
+    if !classification.positive_gates.chat_reaction
+        || !classification.positive_gates.emotion_or_meme
+        || !classification.positive_gates.reusable
+        || !classification.positive_gates.context_independent
+        || !classification.positive_gates.persona_fit
+        || !classification.positive_gates.meaning_clear
+        || !classification.positive_gates.visual_quality
+    {
+        bail!("accepted meme classification did not pass every positive gate")
+    }
+    if classification.risk_gates.ordinary_photo
+        || classification.risk_gates.informational_content
+        || classification.risk_gates.privacy
+        || classification.risk_gates.advertisement
+        || classification.risk_gates.unsafe_or_abusive
+    {
+        bail!("accepted meme classification triggered a risk gate")
+    }
+    validate_text_field("name.zh", &classification.name.zh, 1, MAX_NAME_CHARS)?;
+    validate_text_field("name.en", &classification.name.en, 0, MAX_NAME_CHARS)?;
+    validate_text_field(
+        "description",
+        &classification.description,
+        1,
+        MAX_DESCRIPTION_CHARS,
+    )?;
+    validate_text_field("usage", &classification.usage, 1, MAX_USAGE_CHARS)?;
+    validate_text_field("avoid", &classification.avoid, 0, MAX_AVOID_CHARS)?;
+    validate_tags(&classification.tags, true)?;
+    Ok(())
+}
+
+fn validate_tags(tags: &[String], required: bool) -> Result<()> {
+    if (required && tags.is_empty()) || tags.len() > MAX_TAGS {
+        bail!(
+            "tags must contain between {} and {MAX_TAGS} items",
+            usize::from(required)
+        )
+    }
+    let mut normalized = std::collections::HashSet::new();
+    for tag in tags {
+        validate_text_field("tag", tag, 1, MAX_TAG_CHARS)?;
+        if tag.chars().any(char::is_whitespace) {
+            bail!("tags must be short single tokens")
+        }
+        if !normalized.insert(tag.to_lowercase()) {
+            bail!("tags must be unique")
+        }
+    }
+    Ok(())
+}
+
+fn validate_text_field(name: &str, value: &str, min: usize, max: usize) -> Result<()> {
+    let trimmed = value.trim();
+    let count = trimmed.chars().count();
+    if trimmed != value || count < min || count > max || value.chars().any(char::is_control) {
+        bail!("{name} must be trimmed, control-free, and contain {min}..={max} characters")
+    }
+    Ok(())
+}
+
+fn validate_image_bytes(bytes: &[u8]) -> Result<ValidatedImageFormat> {
+    let reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .context("detecting image format")?;
+    let image_format = reader.format().context("unsupported image format")?;
+    let format = match image_format {
+        image::ImageFormat::Jpeg => ValidatedImageFormat::Jpeg,
+        image::ImageFormat::Png => ValidatedImageFormat::Png,
+        image::ImageFormat::Gif => ValidatedImageFormat::Gif,
+        image::ImageFormat::WebP => ValidatedImageFormat::Webp,
+        _ => bail!("unsupported image format; supported: jpeg, png, gif, webp"),
+    };
+    let (width, height) = reader
+        .into_dimensions()
+        .context("decoding image dimensions")?;
+    validate_dimensions(width, height)?;
+    if format == ValidatedImageFormat::Gif {
+        validate_gif(bytes)?;
+    } else {
+        image::load_from_memory_with_format(bytes, image_format).context("decoding image")?;
+    }
+    Ok(format)
+}
+
+fn validate_dimensions(width: u32, height: u32) -> Result<()> {
+    if !(MIN_IMAGE_EDGE..=MAX_IMAGE_EDGE).contains(&width)
+        || !(MIN_IMAGE_EDGE..=MAX_IMAGE_EDGE).contains(&height)
+        || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
+    {
+        bail!(
+            "image dimensions must be {MIN_IMAGE_EDGE}..={MAX_IMAGE_EDGE} per edge and at most {MAX_IMAGE_PIXELS} pixels"
+        )
+    }
+    Ok(())
+}
+
+fn validate_gif(bytes: &[u8]) -> Result<()> {
+    let decoder = image::codecs::gif::GifDecoder::new(BufReader::new(Cursor::new(bytes)))
+        .context("decoding GIF")?;
+    let frames = decoder.into_frames();
+    let mut frame_count = 0_usize;
+    let mut duration_ms = 0_u64;
+    for frame in frames {
+        let frame = frame.context("decoding GIF frame")?;
+        frame_count += 1;
+        if frame_count > MAX_GIF_FRAMES {
+            bail!("GIF must contain 1..={MAX_GIF_FRAMES} frames")
+        }
+        validate_dimensions(frame.buffer().width(), frame.buffer().height())?;
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        if denominator == 0 {
+            bail!("GIF frame has an invalid delay")
+        }
+        duration_ms = duration_ms.saturating_add(
+            u64::from(numerator).saturating_add(u64::from(denominator) - 1)
+                / u64::from(denominator),
+        );
+        if duration_ms > MAX_GIF_DURATION_MS {
+            bail!("GIF duration exceeds 15 seconds")
+        }
+    }
+    if frame_count == 0 {
+        bail!("GIF must contain 1..={MAX_GIF_FRAMES} frames")
+    }
+    Ok(())
+}
+
+async fn static_gif_preview(path: &Path) -> Result<tempfile::NamedTempFile> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&path)
+            .with_context(|| format!("opening GIF {}", path.display()))?;
+        let decoder = image::codecs::gif::GifDecoder::new(BufReader::new(file))
+            .context("decoding GIF preview")?;
+        let frame = decoder
+            .into_frames()
+            .next()
+            .transpose()
+            .context("decoding first GIF frame")?
+            .context("GIF has no frames")?;
+        let temp = tempfile::Builder::new().suffix(".png").tempfile()?;
+        frame
+            .buffer()
+            .save_with_format(temp.path(), image::ImageFormat::Png)
+            .context("writing static GIF preview")?;
+        Ok(temp)
+    })
+    .await
+    .context("GIF preview task failed")?
+}
+
 fn meme_print_size(args: &Value, config: &MemesPluginConfig) -> Option<String> {
     let width = args
         .get("width")
@@ -851,7 +1364,7 @@ fn meme_print_size(args: &Value, config: &MemesPluginConfig) -> Option<String> {
     }
 }
 
-fn configured_meme_size(config: &MemesPluginConfig) -> Option<String> {
+pub(crate) fn configured_meme_size(config: &MemesPluginConfig) -> Option<String> {
     let (cols, rows) = crossterm::terminal::size().ok()?;
     let width = ((cols as u32 * config.width_percent as u32) / 100)
         .max(1)
@@ -872,39 +1385,8 @@ fn expand_path(value: &str) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
+        super::workspace::effective_workdir().join(path)
     }
-}
-
-fn image_ext(path: &Path) -> Result<&'static str> {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "jpg" | "jpeg" => Ok("jpg"),
-        "png" => Ok("png"),
-        "webp" => Ok("webp"),
-        "gif" => Ok("gif"),
-        value => {
-            bail!("unsupported image extension: {value}; supported: jpg, jpeg, png, webp, gif")
-        }
-    }
-}
-
-fn mime_from_ext(ext: &str) -> Result<String> {
-    Ok(match ext {
-        "jpg" => "image/jpeg",
-        "png" => "image/png",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        value => bail!("unsupported image extension: {value}"),
-    }
-    .to_string())
 }
 
 fn has_supplied_metadata(args: &Value) -> bool {
@@ -956,6 +1438,19 @@ fn item_from_args(
     if name.zh.is_empty() || description.is_empty() || usage.is_empty() {
         bail!("name_zh, description, and usage are required when supplying metadata manually")
     }
+    let tags = string_array(args.get("tags"));
+    validate_text_field("name.zh", &name.zh, 1, MAX_NAME_CHARS)?;
+    validate_text_field("name.en", &name.en, 0, MAX_NAME_CHARS)?;
+    validate_text_field("description", &description, 1, MAX_DESCRIPTION_CHARS)?;
+    validate_text_field("usage", &usage, 1, MAX_USAGE_CHARS)?;
+    let avoid = args
+        .get("avoid")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    validate_text_field("avoid", &avoid, 0, MAX_AVOID_CHARS)?;
+    validate_tags(&tags, false)?;
     Ok(MemeItem {
         id,
         name,
@@ -964,66 +1459,36 @@ fn item_from_args(
         animated,
         description,
         usage,
-        avoid: args
-            .get("avoid")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        tags: string_array(args.get("tags")),
+        avoid,
+        tags,
+        origin: None,
     })
 }
 
-fn item_from_metadata(
+fn item_from_classification(
     id: String,
     file: String,
     mime_type: String,
     animated: bool,
-    metadata: Value,
+    classification: MemeClassification,
+    origin: Option<MemeOrigin>,
 ) -> Result<MemeItem> {
-    let name = metadata.get("name").cloned().unwrap_or_default();
+    validate_classification(&classification)?;
+    if !classification.save {
+        bail!("vision classification rejected the image")
+    }
     let item = MemeItem {
         id,
-        name: LocalizedName {
-            zh: name
-                .get("zh")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-            en: name
-                .get("en")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-        },
+        name: classification.name,
         file,
         mime_type,
         animated,
-        description: metadata
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        usage: metadata
-            .get("usage")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        avoid: metadata
-            .get("avoid")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        tags: string_array(metadata.get("tags")),
+        description: classification.description,
+        usage: classification.usage,
+        avoid: classification.avoid,
+        tags: classification.tags,
+        origin,
     };
-    if item.name.zh.is_empty() || item.description.is_empty() || item.usage.is_empty() {
-        bail!("vision metadata is incomplete")
-    }
     Ok(item)
 }
 
@@ -1078,6 +1543,7 @@ fn source_label(source: MemeSource) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::{Delay, Frame, ImageEncoder, Rgba, RgbaImage};
 
     #[test]
     fn sanitize_library_keeps_simple_names() {
@@ -1100,8 +1566,222 @@ mod tests {
             usage: "适合 Linux 话题".to_string(),
             avoid: String::new(),
             tags: vec!["Linux".to_string(), "企鹅".to_string()],
+            origin: None,
         };
         assert!(score_meme(&item, "Linux", &[]) > score_meme(&item, "炸鸡", &[]));
+    }
+
+    #[test]
+    fn current_library_follows_persona_mapping() {
+        let mut config = AppConfig::default();
+        assert_eq!(current_persona_library(&config), "laozhou");
+        config.prompt.active_persona = "Custom Persona.md".to_string();
+        config.plugins.memes.persona_libraries.insert(
+            config.active_persona_scope(),
+            "Shared Reactions".to_string(),
+        );
+        assert_eq!(current_persona_library(&config), "shared-reactions");
+    }
+
+    #[test]
+    fn strict_classification_requires_all_acceptance_gates() {
+        let accepted = accepted_classification();
+        validate_classification(&accepted).unwrap();
+
+        let mut low_confidence = accepted.clone();
+        low_confidence.confidence = 99;
+        assert!(validate_classification(&low_confidence).is_err());
+
+        let mut missing_positive = accepted.clone();
+        missing_positive.positive_gates.reusable = false;
+        assert!(validate_classification(&missing_positive).is_err());
+
+        let mut ordinary_photo = accepted;
+        ordinary_photo.risk_gates.ordinary_photo = true;
+        assert!(validate_classification(&ordinary_photo).is_err());
+    }
+
+    #[test]
+    fn rejected_classification_never_becomes_an_item() {
+        let mut rejected = accepted_classification();
+        rejected.save = false;
+        validate_classification(&rejected).unwrap();
+        assert!(item_from_classification(
+            "sha256:test".to_string(),
+            "images/test.png".to_string(),
+            "image/png".to_string(),
+            false,
+            rejected,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn meme_item_origin_roundtrips_and_stays_backward_compatible() {
+        let legacy = r#"{"id":"sha256:x","name":{"zh":"名","en":""},"file":"images/x.png","mime_type":"image/png","description":"d","usage":"u","avoid":""}"#;
+        let item: MemeItem = serde_json::from_str(legacy).unwrap();
+        assert!(item.origin.is_none());
+        assert!(!serde_json::to_string(&item).unwrap().contains("origin"));
+
+        let with_origin = MemeItem {
+            origin: Some(MemeOrigin {
+                platform: "onebot".to_string(),
+                sender_id: "10001".to_string(),
+                sender_name: "群友".to_string(),
+                sent_at: "2026-08-10T12:00:00+00:00".to_string(),
+                ..Default::default()
+            }),
+            ..item
+        };
+        let text = serde_json::to_string(&with_origin).unwrap();
+        let back: MemeItem = serde_json::from_str(&text).unwrap();
+        let origin = back.origin.unwrap();
+        assert_eq!(origin.sender_id, "10001");
+        assert_eq!(origin.sender_name, "群友");
+        assert_eq!(origin.sent_at, "2026-08-10T12:00:00+00:00");
+    }
+
+    /// 真实链路实测：cargo test --bin laozhou -- --ignored collect_meme_records_origin
+    /// 需要 MIYU_E2E_CONFIG_DIR 指向含识图模型配置的真实 config 目录，
+    /// MIYU_E2E_IMAGE 指向一张能通过表情判定的图片；数据写入临时目录。
+    #[tokio::test]
+    #[ignore = "hits the real vision model; needs MIYU_E2E_CONFIG_DIR + MIYU_E2E_IMAGE"]
+    async fn collect_meme_records_origin_end_to_end() {
+        let config_dir = PathBuf::from(std::env::var("MIYU_E2E_CONFIG_DIR").unwrap());
+        let image = PathBuf::from(std::env::var("MIYU_E2E_IMAGE").unwrap());
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LaozhouPaths {
+            config_dir: config_dir.clone(),
+            config_file: config_dir.join("config.jsonc"),
+            skills_dir: config_dir.join("skills"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            state_dir: temp.path().join("state"),
+            pictures_dir: temp.path().join("pictures"),
+            fish_hook_file: temp.path().join("fish/laozhou.fish"),
+            bash_hook_file: temp.path().join("shell/bash-hook.sh"),
+            zsh_hook_file: temp.path().join("shell/zsh-hook.zsh"),
+            scripts_dir: config_dir.join("scripts"),
+            system_scripts_dir: PathBuf::new(),
+        };
+        let config = AppConfig::load_or_default(&paths).unwrap();
+        let origin = MemeOrigin {
+            platform: "onebot".to_string(),
+            conversation_kind: "group".to_string(),
+            conversation_id: "123456".to_string(),
+            sender_id: "10001".to_string(),
+            sender_name: "测试群友".to_string(),
+            message_id: "msg-e2e-1".to_string(),
+            sent_at: "2026-08-10T12:00:00+00:00".to_string(),
+            collected_at: String::new(),
+        };
+        let outcome = collect_meme_from_local_image(&image, &config, &paths, Some(origin))
+            .await
+            .unwrap();
+        let meme = match outcome {
+            MemeCollectionOutcome::Accepted { meme } => meme,
+            other => panic!("expected acceptance, got {other:?}"),
+        };
+        let index_path = user_library_dir(&paths, &meme.library).join("index.json");
+        let index: MemeIndex =
+            serde_json::from_str(&std::fs::read_to_string(index_path).unwrap()).unwrap();
+        let saved = index
+            .memes
+            .iter()
+            .find(|item| item.id == meme.id)
+            .expect("saved meme in index");
+        let origin = saved.origin.as_ref().expect("origin recorded");
+        assert_eq!(origin.sender_id, "10001");
+        assert_eq!(origin.sender_name, "测试群友");
+        assert_eq!(origin.sent_at, "2026-08-10T12:00:00+00:00");
+        assert!(!origin.collected_at.is_empty(), "collected_at stamped");
+        println!("E2E origin: {}", serde_json::to_string_pretty(origin).unwrap());
+    }
+
+    #[test]
+    fn strict_schema_rejects_unknown_and_missing_fields() {
+        let mut value = serde_json::to_value(classification_json()).unwrap();
+        value["extra"] = json!(true);
+        assert!(serde_json::from_value::<MemeClassification>(value).is_err());
+
+        let mut missing = classification_json();
+        missing.as_object_mut().unwrap().remove("confidence");
+        assert!(serde_json::from_value::<MemeClassification>(missing).is_err());
+
+        let mut nested = classification_json();
+        nested["name"]["unexpected"] = json!("value");
+        assert!(serde_json::from_value::<MemeClassification>(nested).is_err());
+    }
+
+    #[test]
+    fn classification_enforces_metadata_and_tag_limits() {
+        let mut classification = accepted_classification();
+        classification.description = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
+        assert!(validate_classification(&classification).is_err());
+
+        let mut duplicate_tags = accepted_classification();
+        duplicate_tags.tags = vec!["Happy".to_string(), "happy".to_string()];
+        assert!(validate_classification(&duplicate_tags).is_err());
+
+        let mut spaced_tag = accepted_classification();
+        spaced_tag.tags = vec!["not short".to_string()];
+        assert!(validate_classification(&spaced_tag).is_err());
+    }
+
+    #[test]
+    fn image_validation_uses_content_not_extension() {
+        let bytes = png_bytes(64, 48);
+        assert_eq!(
+            validate_image_bytes(&bytes).unwrap(),
+            ValidatedImageFormat::Png
+        );
+        assert!(validate_image_bytes(b"not an image").is_err());
+    }
+
+    #[test]
+    fn image_validation_enforces_dimension_bounds() {
+        assert!(validate_image_bytes(&png_bytes(31, 64)).is_err());
+        assert!(validate_image_bytes(&png_bytes(64, 32)).is_ok());
+        assert!(validate_dimensions(4096, 3907).is_err());
+    }
+
+    #[test]
+    fn gif_validation_enforces_frame_and_duration_limits() {
+        assert!(validate_image_bytes(&gif_bytes(2, 100)).is_ok());
+        assert!(validate_image_bytes(&gif_bytes(2, 8_000)).is_err());
+        assert!(validate_image_bytes(&gif_bytes(MAX_GIF_FRAMES + 1, 1)).is_err());
+    }
+
+    #[tokio::test]
+    async fn gif_terminal_preview_is_a_static_png() {
+        let mut source = tempfile::Builder::new().suffix(".gif").tempfile().unwrap();
+        source.write_all(&gif_bytes(2, 100)).unwrap();
+        let preview = static_gif_preview(source.path()).await.unwrap();
+        let reader = image::ImageReader::open(preview.path())
+            .unwrap()
+            .with_guessed_format()
+            .unwrap();
+        assert_eq!(reader.format(), Some(image::ImageFormat::Png));
+    }
+
+    #[test]
+    fn index_save_replaces_atomically_and_remains_parseable() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library/index.json");
+        let mut index = MemeIndex {
+            library: "test".to_string(),
+            version: 2,
+            memes: Vec::new(),
+            disabled_ids: Vec::new(),
+        };
+        save_index(&path, &index).unwrap();
+        index.disabled_ids.push("sha256:abc".to_string());
+        save_index(&path, &index).unwrap();
+        assert_eq!(
+            load_index(&path).unwrap().unwrap().disabled_ids,
+            index.disabled_ids
+        );
     }
 
     #[test]
@@ -1184,9 +1864,100 @@ mod tests {
                 usage: "测试".to_string(),
                 avoid: String::new(),
                 tags: Vec::new(),
+                origin: None,
             },
             path: PathBuf::from("images/test.png"),
             source: MemeSource::User,
         }
+    }
+
+    fn accepted_classification() -> MemeClassification {
+        MemeClassification {
+            save: true,
+            confidence: 100,
+            positive_gates: PositiveGates {
+                chat_reaction: true,
+                emotion_or_meme: true,
+                reusable: true,
+                context_independent: true,
+                persona_fit: true,
+                meaning_clear: true,
+                visual_quality: true,
+            },
+            risk_gates: RiskGates {
+                ordinary_photo: false,
+                informational_content: false,
+                privacy: false,
+                advertisement: false,
+                unsafe_or_abusive: false,
+            },
+            name: LocalizedName {
+                zh: "开心猫".to_string(),
+                en: "Happy Cat".to_string(),
+            },
+            description: "一只卡通猫开心地挥手。".to_string(),
+            usage: "适合轻松打招呼。".to_string(),
+            avoid: "严肃场景不要使用。".to_string(),
+            tags: vec!["开心".to_string(), "猫".to_string()],
+        }
+    }
+
+    fn classification_json() -> Value {
+        json!({
+            "save": true,
+            "confidence": 100,
+            "positive_gates": {
+                "chat_reaction": true,
+                "emotion_or_meme": true,
+                "reusable": true,
+                "context_independent": true,
+                "persona_fit": true,
+                "meaning_clear": true,
+                "visual_quality": true
+            },
+            "risk_gates": {
+                "ordinary_photo": false,
+                "informational_content": false,
+                "privacy": false,
+                "advertisement": false,
+                "unsafe_or_abusive": false
+            },
+            "name": { "zh": "开心猫", "en": "Happy Cat" },
+            "description": "一只卡通猫开心地挥手。",
+            "usage": "适合轻松打招呼。",
+            "avoid": "严肃场景不要使用。",
+            "tags": ["开心", "猫"]
+        })
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let image = RgbaImage::from_pixel(width, height, Rgba([20, 40, 60, 255]));
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(
+                image.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+        bytes
+    }
+
+    fn gif_bytes(frames: usize, delay_ms: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            let frames = (0..frames).map(|_| {
+                Frame::from_parts(
+                    RgbaImage::from_pixel(32, 32, Rgba([20, 40, 60, 255])),
+                    0,
+                    0,
+                    Delay::from_numer_denom_ms(delay_ms, 1),
+                )
+            });
+            encoder.encode_frames(frames).unwrap();
+        }
+        bytes
     }
 }

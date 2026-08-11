@@ -54,7 +54,7 @@ impl Locale {
     where
         F: FnMut(&str) -> Option<String>,
     {
-        if let Some(value) = env("LAOZHOU_LANG") {
+        if let Some(value) = env("MIYU_LANG") {
             if let Some(language) = UiLanguage::parse(&value) {
                 return language
                     .locale()
@@ -101,18 +101,20 @@ pub fn is_zh() -> bool {
 }
 
 pub fn text(en: &'static str, zh: &'static str) -> &'static str {
-    if is_zh() {
-        zh
-    } else {
-        en
+    text_for(locale(), en, zh)
+}
+
+pub fn text_for(locale: Locale, en: &'static str, zh: &'static str) -> &'static str {
+    match locale {
+        Locale::En => en,
+        Locale::Zh => zh,
     }
 }
 
 pub fn text_owned(en: String, zh: String) -> String {
-    if is_zh() {
-        zh
-    } else {
-        en
+    match locale() {
+        Locale::Zh => zh,
+        Locale::En => en,
     }
 }
 
@@ -159,9 +161,15 @@ mod tests {
     }
 
     #[test]
+    fn explicit_locale_text_does_not_depend_on_global_state() {
+        assert_eq!(text_for(Locale::En, "English", "中文"), "English");
+        assert_eq!(text_for(Locale::Zh, "English", "中文"), "中文");
+    }
+
+    #[test]
     fn resolves_environment_then_config_then_system_locale() {
         let locale = Locale::resolve_with("zh", |key| match key {
-            "LAOZHOU_LANG" => Some("en_US.UTF-8".to_string()),
+            "MIYU_LANG" => Some("en_US.UTF-8".to_string()),
             "LANG" => Some("zh_CN.UTF-8".to_string()),
             _ => None,
         });
@@ -180,7 +188,7 @@ mod tests {
         assert_eq!(locale, Locale::Zh);
 
         let locale = Locale::resolve_with("zh", |key| match key {
-            "LAOZHOU_LANG" => Some("auto".to_string()),
+            "MIYU_LANG" => Some("auto".to_string()),
             "LANG" => Some("en_US.UTF-8".to_string()),
             _ => None,
         });
@@ -190,7 +198,7 @@ mod tests {
     #[test]
     fn system_locale_detection_ignores_ui_override() {
         let mut env = |key: &str| match key {
-            "LAOZHOU_LANG" => Some("en".to_string()),
+            "MIYU_LANG" => Some("en".to_string()),
             "LANG" => Some("zh_CN.UTF-8".to_string()),
             _ => None,
         };

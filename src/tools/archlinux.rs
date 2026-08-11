@@ -1,20 +1,11 @@
-use super::{ToolRegistry, ToolSpec};
+use super::{html_conversion, http_response, ToolRegistry, ToolSpec};
 use crate::paths::LaozhouPaths;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
-use std::time::Duration;
 
 const ARCH_STATUS_BASE_URL: &str = "https://status.archlinux.org";
 const ARCH_STATUS_PAGE_ID: &str = "vmM5ruWEAB";
 const ARCH_NEWS_FEED_URL: &str = "https://archlinux.org/feeds/news/";
-
-/// 统一超时客户端，防止网络挂起导致 agent 卡死
-fn http_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(Into::into)
-}
 const ARCH_NEWS_CACHE_FILE: &str = "arch_news_last_seen.json";
 
 pub fn register(registry: &mut ToolRegistry, paths: &LaozhouPaths) {
@@ -129,7 +120,7 @@ async fn aur_search(args: Value) -> Result<String> {
         urlencoding::encode(by),
         urlencoding::encode(&query)
     );
-    let data: Value = http_client()?.get(url).send().await?.error_for_status()?.json().await?;
+    let data: Value = reqwest::get(url).await?.error_for_status()?.json().await?;
     let results = data
         .get("results")
         .and_then(Value::as_array)
@@ -160,7 +151,7 @@ async fn aur_info(args: Value) -> Result<String> {
         url.push_str("&arg[]=");
         url.push_str(&urlencoding::encode(name));
     }
-    let data: Value = http_client()?.get(url).send().await?.error_for_status()?.json().await?;
+    let data: Value = reqwest::get(url).await?.error_for_status()?.json().await?;
     let raw_results = data
         .get("results")
         .and_then(Value::as_array)
@@ -295,7 +286,7 @@ async fn archwiki(args: Value) -> Result<String> {
     if mode == "search" || (mode == "auto" && title.is_empty()) {
         let q = if query.is_empty() { title } else { query };
         let url = format!("https://wiki.archlinux.org/api.php?action=opensearch&search={}&limit=8&namespace=0&format=json", urlencoding::encode(q));
-        let data: Value = http_client()?.get(url).send().await?.error_for_status()?.json().await?;
+        let data: Value = reqwest::get(url).await?.error_for_status()?.json().await?;
         if mode == "search" {
             return Ok(serde_json::to_string_pretty(&data)?);
         }
@@ -319,12 +310,14 @@ async fn fetch_archwiki_page(title: &str) -> Result<String> {
         "https://wiki.archlinux.org/api.php?action=parse&page={}&prop=text&format=json",
         urlencoding::encode(title)
     );
-    let data: Value = http_client()?.get(url).send().await?.error_for_status()?.json().await?;
+    let response = reqwest::get(url).await?.error_for_status()?;
+    let data: Value =
+        http_response::read_json(response, http_response::MAX_HTML_RESPONSE_BYTES).await?;
     let html = data
         .pointer("/parse/text/*")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    Ok(html2md::parse_html(html))
+    html_conversion::to_markdown(html.to_string()).await
 }
 
 fn required(args: &Value, key: &str) -> Result<String> {
@@ -698,7 +691,7 @@ fn parse_rss_feed(xml: &str, limit: usize) -> Vec<NewsArticle> {
                     }
                     "description" => {
                         if article.description.is_empty() {
-                            let stripped = html2text::from_read(text.as_bytes(), 2000);
+                            let stripped = html_conversion::to_text_lossy(&text, 2000);
                             article.description = clip_string(&stripped, 500);
                         }
                     }

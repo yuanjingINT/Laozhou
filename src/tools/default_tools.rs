@@ -17,14 +17,14 @@ const MAX_LINE_CHARS: usize = 2_000;
 const MAX_COMMAND_OUTPUT_CHARS: usize = 20_000;
 const SEARCH_TIMEOUT_SECONDS: u64 = 30;
 
-pub fn register(registry: &mut ToolRegistry, allow_command_execution: bool) {
+pub fn register(registry: &mut ToolRegistry, allow_command_execution: bool, delete_guard: bool) {
     register_readonly(registry);
     registry.register(ToolSpec::new_with_progress(
         "run_command",
-        t("Run a shell command in the workspace when skills.allow_command_execution is enabled.", "当 skills.allow_command_execution 启用时，在工作区运行 shell 命令。"),
-        json!({"type":"object","properties":{"command":{"type":"string","description": t("Command to run.", "要运行的命令。")},"timeout_seconds":{"type":"integer","description": t("Optional timeout in seconds.", "可选超时时间，单位秒。")}},"required":["command"],"additionalProperties":false}),
+        t("Run a shell command in the workspace when skills.allow_command_execution is enabled. Set background=true for long-running commands (builds, dev servers): it returns a job_id immediately; poll with job_status and stop with job_stop.", "当 skills.allow_command_execution 启用时，在工作区运行 shell 命令。长时命令（构建、dev server）用 background=true：立即返回 job_id，用 job_status 查询、job_stop 停止。"),
+        json!({"type":"object","properties":{"command":{"type":"string","description": t("Command to run.", "要运行的命令。")},"timeout_seconds":{"type":"integer","description": t("Optional timeout in seconds. Ignored when background=true.", "可选超时时间，单位秒；background=true 时忽略。")},"background":{"type":"boolean","description": t("Run detached as a background command and return a short job_id immediately.", "作为后台命令分离运行，立即返回短 job_id。")},"title":{"type":"string","description": t("Short display title (<=16 chars) for the background command.", "后台命令的短标题（不超过 16 字），用于状态行显示，例如 release 构建。")}},"required":["command"],"additionalProperties":false}),
         move |args, progress| async move {
-            run_command(args, allow_command_execution, progress).await
+            run_command(args, allow_command_execution, delete_guard, progress).await
         },
     ).writes());
     registry.register(ToolSpec::new_with_progress(
@@ -50,7 +50,7 @@ pub fn register_readonly(registry: &mut ToolRegistry) {
     ));
     registry.register(ToolSpec::new(
         "check_os_info",
-        t("Check basic read-only OS, shell, desktop session, kernel, host, and package-manager context. For concrete Linux input method issues, prefer linux_input_method_diagnose.", "查看只读基础系统信息，包括 OS、shell、桌面会话、内核、主机和包管理器上下文。排查具体 Linux 输入法问题时优先使用 linux_input_method_diagnose。"),
+        t("Check basic read-only OS, shell, desktop session, kernel, host, and package-manager context. For concrete Linux input method issues, load the linux-input-method-diagnose skill.", "查看只读基础系统信息，包括 OS、shell、桌面会话、内核、主机和包管理器上下文。排查具体 Linux 输入法问题时先加载 linux-input-method-diagnose 技能。"),
         json!({"type":"object","properties":{},"additionalProperties":false}),
         |_| async move { check_os_info() },
     ));
@@ -127,7 +127,7 @@ fn check_os_info() -> Result<String> {
         "package_manager_guess": package_manager_guess,
         "notes": [
             "This tool is read-only and does not execute shell commands.",
-            "This only reports basic OS context. For concrete Linux input method issues, use linux_input_method_diagnose."
+            "This only reports basic OS context. For concrete Linux input method issues, load the linux-input-method-diagnose skill."
         ],
     }))?)
 }
@@ -211,7 +211,7 @@ fn plist_value(raw: &str, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn read_file(args: Value) -> Result<String> {
+pub(crate) fn read_file(args: Value) -> Result<String> {
     let path = path_arg(&args, "path")?;
     let offset = args
         .get("offset")
@@ -244,9 +244,9 @@ fn read_file(args: Value) -> Result<String> {
             "path": path.display().to_string(),
             "offset": offset,
             "limit": limit,
-            "entries": selected,
             "truncated": next.is_some(),
             "next": next,
+            "entries": selected,
         }))?);
     }
     let metadata = std::fs::metadata(&path)?;
@@ -286,14 +286,16 @@ fn read_file(args: Value) -> Result<String> {
     if lines.is_empty() && offset != 1 {
         bail!("offset {offset} is out of range")
     }
+    // Pagination cursor before the bulky content: truncating consumers
+    // (platform tool logs cap at 2400 chars) must still see truncated/next.
     Ok(serde_json::to_string_pretty(&json!({
         "type": "text-page",
         "path": path.display().to_string(),
         "offset": offset,
         "limit": limit,
-        "content": lines.join("\n"),
         "truncated": next.is_some(),
         "next": next,
+        "content": lines.join("\n"),
     }))?)
 }
 
@@ -387,7 +389,7 @@ fn trash_path_with(
 }
 
 async fn glob_files(args: Value) -> Result<String> {
-    let path = optional_path(&args).unwrap_or(std::env::current_dir()?);
+    let path = optional_path(&args).unwrap_or_else(super::workspace::effective_workdir);
     let search_path = prepare_search_path(&path)?;
     let pattern = required(&args, "pattern")?;
     let max_results = max_results(&args);
@@ -410,7 +412,7 @@ async fn glob_files(args: Value) -> Result<String> {
 }
 
 async fn grep_text(args: Value) -> Result<String> {
-    let path = optional_path(&args).unwrap_or(std::env::current_dir()?);
+    let path = optional_path(&args).unwrap_or_else(super::workspace::effective_workdir);
     let is_file = path.is_file();
     let search_root = if is_file {
         path.parent()
@@ -455,11 +457,37 @@ async fn grep_text(args: Value) -> Result<String> {
     search_output_limited(output, max_results)
 }
 
-async fn run_command(args: Value, allowed: bool, progress: ToolProgress) -> Result<String> {
+async fn run_command(
+    args: Value,
+    allowed: bool,
+    delete_guard: bool,
+    progress: ToolProgress,
+) -> Result<String> {
     if !allowed {
         bail!("{}", t("command execution is disabled; set skills.allow_command_execution=true in config.jsonc to enable run_command", "命令执行已禁用；请在 config.jsonc 中设置 skills.allow_command_execution=true 以启用 run_command"));
     }
     let command = required(&args, "command")?;
+    // Before the background branch, not inside execute_command: a detached job
+    // never reaches execute_command, and once it is spawned there is nobody
+    // left to ask.
+    if super::delete_guard::screen_command(&command, delete_guard, &progress)
+        .await?
+        .is_none()
+    {
+        return Ok(t(
+            "moved to Trash instead of running the command, at the user's request",
+            "按用户要求改为移入回收站，未执行该命令",
+        )
+        .to_string());
+    }
+    if args
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let title = args.get("title").and_then(Value::as_str);
+        return super::jobs::spawn_background(&command, title, &progress).await;
+    }
     let timeout = args
         .get("timeout_seconds")
         .and_then(Value::as_u64)
@@ -471,6 +499,18 @@ async fn run_command(args: Value, allowed: bool, progress: ToolProgress) -> Resu
 async fn run_readonly_command(args: Value, progress: ToolProgress) -> Result<String> {
     let command = required(&args, "command")?;
     ensure_readonly_command(&command)?;
+    // The read-only filter is a substring match and lets plenty through; the
+    // guard is the part that actually stops a deletion.
+    if super::delete_guard::screen_command(&command, true, &progress)
+        .await?
+        .is_none()
+    {
+        return Ok(t(
+            "moved to Trash instead of running the command, at the user's request",
+            "按用户要求改为移入回收站，未执行该命令",
+        )
+        .to_string());
+    }
     let timeout = args
         .get("timeout_seconds")
         .and_then(Value::as_u64)
@@ -484,6 +524,9 @@ async fn execute_command(command: &str, timeout: u64, progress: ToolProgress) ->
     command_process
         .arg("-lc")
         .arg(command)
+        // Explicit cwd: shell commands must run in the turn workspace, not
+        // whatever the daemon process cwd happens to be.
+        .current_dir(super::workspace::effective_workdir())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -566,21 +609,46 @@ impl Drop for CommandProcessGroup {
     }
 }
 
+/// Cumulative cap for collected command output. Beyond it the stream is
+/// still drained (so the child never blocks on a full pipe) but no longer
+/// buffered or forwarded — unbounded collection plus a clone per chunk
+/// into the progress channel is a memory hazard on runaway commands.
+const MAX_COMMAND_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
 async fn read_command_output(
     mut reader: impl tokio::io::AsyncRead + Unpin,
     progress: ToolProgress,
     report: impl Fn(&ToolProgress, Vec<u8>),
 ) -> std::io::Result<Vec<u8>> {
     let mut output = Vec::new();
+    let mut truncated = false;
     let mut buffer = [0; 8192];
     loop {
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
             break;
         }
-        let chunk = buffer[..read].to_vec();
+        let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(output.len());
+        if remaining == 0 {
+            truncated = true;
+            continue;
+        }
+        let take = read.min(remaining);
+        if take < read {
+            truncated = true;
+        }
+        let chunk = buffer[..take].to_vec();
         output.extend_from_slice(&chunk);
         report(&progress, chunk);
+    }
+    if truncated {
+        output.extend_from_slice(
+            crate::i18n::text(
+                "\n[output truncated at the 8MB cap]",
+                "\n[输出超出 8MB 上限，已截断]",
+            )
+            .as_bytes(),
+        );
     }
     Ok(output)
 }
@@ -824,7 +892,7 @@ fn resolve_existing_path_without_following_leaf(path: &Path) -> Result<PathBuf> 
 }
 
 fn ensure_safe_trash_target(path: &Path) -> Result<()> {
-    let cwd = std::env::current_dir()?.canonicalize()?;
+    let cwd = super::workspace::effective_workdir().canonicalize()?;
     let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
     let dangerous = [
         Path::new("/"),
@@ -957,9 +1025,7 @@ fn expand_path(value: &str) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
+        super::workspace::effective_workdir().join(path)
     }
 }
 

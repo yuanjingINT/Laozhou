@@ -75,6 +75,105 @@ struct CommandStreamState {
     pending_cr: bool,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct CommandOutputPreviewLine {
+    stream: &'static str,
+    text: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct CommandOutputPreview {
+    lines: Vec<CommandOutputPreviewLine>,
+    omitted: bool,
+}
+
+pub(crate) struct CommandOutputTail {
+    max_output_rows: usize,
+    stdout: CommandStreamState,
+    stderr: CommandStreamState,
+    completed: VecDeque<CommandLogLine>,
+    omitted_lines: bool,
+    sequence: u64,
+}
+
+impl CommandOutputTail {
+    pub(crate) fn new(max_output_rows: usize) -> Self {
+        Self {
+            max_output_rows,
+            stdout: CommandStreamState::default(),
+            stderr: CommandStreamState::default(),
+            completed: VecDeque::new(),
+            omitted_lines: false,
+            sequence: 0,
+        }
+    }
+
+    pub(crate) fn push(&mut self, stream: CommandOutputStream, chunk: &[u8]) {
+        self.sequence = self.sequence.wrapping_add(1);
+        let completed = match stream {
+            CommandOutputStream::Stdout => self.stdout.push(chunk, self.sequence),
+            CommandOutputStream::Stderr => self.stderr.push(chunk, self.sequence),
+        };
+        self.completed.extend(completed.into_iter().map(|mut line| {
+            line.stream = stream;
+            line
+        }));
+        let keep = self.max_output_rows.saturating_mul(4).max(100);
+        while self.completed.len() > keep {
+            self.completed.pop_front();
+            self.omitted_lines = true;
+        }
+    }
+
+    pub(crate) fn finalize(&mut self) {
+        self.stdout.finalize_pending(self.sequence);
+        self.stderr.finalize_pending(self.sequence);
+    }
+
+    pub(crate) fn preview(&self) -> CommandOutputPreview {
+        if self.max_output_rows == 0 {
+            return CommandOutputPreview {
+                lines: Vec::new(),
+                omitted: false,
+            };
+        }
+        let logical = self.logical_lines();
+        let omitted = self.omitted_lines || logical.len() > self.max_output_rows;
+        let start = logical.len().saturating_sub(self.max_output_rows);
+        let lines = logical[start..]
+            .iter()
+            .map(|line| CommandOutputPreviewLine {
+                stream: match line.stream {
+                    CommandOutputStream::Stdout => "stdout",
+                    CommandOutputStream::Stderr => "stderr",
+                },
+                text: line.text.clone(),
+            })
+            .collect();
+        CommandOutputPreview { lines, omitted }
+    }
+
+    fn logical_lines(&self) -> Vec<CommandLogLine> {
+        let mut logical = self.completed.iter().cloned().collect::<Vec<_>>();
+        let mut pending = [
+            (CommandOutputStream::Stdout, &self.stdout),
+            (CommandOutputStream::Stderr, &self.stderr),
+        ];
+        pending.sort_by_key(|(_, state)| state.last_update);
+        for (stream, state) in pending {
+            if !state.current.is_empty() {
+                logical.push(CommandLogLine {
+                    stream,
+                    text: state.current.clone(),
+                    sequence: state.current_sequence.unwrap_or(state.last_update),
+                });
+            }
+        }
+        logical.sort_by_key(|line| line.sequence);
+        logical
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 enum TerminalControlState {
     #[default]
@@ -156,27 +255,26 @@ struct CommandLiveDisplay {
     status: CommandStatus,
     max_output_rows: usize,
     show_output: bool,
-    stdout: CommandStreamState,
-    stderr: CommandStreamState,
-    completed: VecDeque<CommandLogLine>,
-    omitted_lines: bool,
-    sequence: u64,
+    show_full_command: bool,
+    output: CommandOutputTail,
     frame: usize,
     rendered_line_widths: Vec<usize>,
 }
 
 impl CommandLiveDisplay {
-    fn new(arguments: &str, max_output_rows: usize, show_output: bool) -> Self {
+    fn new(
+        arguments: &str,
+        max_output_rows: usize,
+        show_output: bool,
+        show_full_command: bool,
+    ) -> Self {
         Self {
             command: command_from_arguments(arguments),
             status: CommandStatus::Running,
             max_output_rows,
             show_output,
-            stdout: CommandStreamState::default(),
-            stderr: CommandStreamState::default(),
-            completed: VecDeque::new(),
-            omitted_lines: false,
-            sequence: 0,
+            show_full_command,
+            output: CommandOutputTail::new(max_output_rows),
             frame: 0,
             rendered_line_widths: Vec::new(),
         }
@@ -191,20 +289,7 @@ impl CommandLiveDisplay {
     }
 
     fn push(&mut self, stream: CommandOutputStream, chunk: &[u8]) {
-        self.sequence = self.sequence.wrapping_add(1);
-        let completed = match stream {
-            CommandOutputStream::Stdout => self.stdout.push(chunk, self.sequence),
-            CommandOutputStream::Stderr => self.stderr.push(chunk, self.sequence),
-        };
-        self.completed.extend(completed.into_iter().map(|mut line| {
-            line.stream = stream;
-            line
-        }));
-        let keep = self.max_output_rows.saturating_mul(4).max(100);
-        while self.completed.len() > keep {
-            self.completed.pop_front();
-            self.omitted_lines = true;
-        }
+        self.output.push(stream, chunk);
     }
 
     fn tick(&mut self, writer: &mut impl Write) -> Result<()> {
@@ -241,8 +326,7 @@ impl CommandLiveDisplay {
     }
 
     fn commit(&mut self, writer: &mut impl Write, include_output: bool) -> Result<()> {
-        self.stdout.finalize_pending(self.sequence);
-        self.stderr.finalize_pending(self.sequence);
+        self.output.finalize();
         let show_output = self.show_output;
         self.show_output = include_output && show_output;
         self.redraw(writer, false)?;
@@ -256,8 +340,7 @@ impl CommandLiveDisplay {
     }
 
     fn write_static(&mut self, writer: &mut impl Write, include_output: bool) -> Result<()> {
-        self.stdout.finalize_pending(self.sequence);
-        self.stderr.finalize_pending(self.sequence);
+        self.output.finalize();
         let show_output = self.show_output;
         self.show_output = include_output && show_output;
         let lines = self.rendered_lines(command_terminal_width(), false);
@@ -297,35 +380,16 @@ impl CommandLiveDisplay {
     fn rendered_lines(&self, width: usize, spinning: bool) -> Vec<String> {
         let usable = width.saturating_sub(1).max(5);
         let body_width = usable.saturating_sub(4).max(1);
-        let command = if self.command.lines().count() > 1 {
-            format!(
-                "{} {} · {} {}",
-                self.command.lines().count(),
-                t("lines", "行"),
-                self.command.chars().count(),
-                t("chars", "字符")
-            )
-        } else {
-            self.command.clone()
-        };
-        let wrapped_command = wrap_plain_text(&command, body_width);
-        let mut output = Vec::with_capacity(wrapped_command.len() + self.max_output_rows + 1);
+        let command_lines = render_command_preview(
+            &self.command,
+            usable,
+            self.show_full_command,
+            spinning,
+            self.frame,
+        );
+        let mut output = Vec::with_capacity(command_lines.len() + self.max_output_rows + 1);
         output.push(command_heading_line(self.status));
-        for (index, line) in wrapped_command.iter().enumerate() {
-            let prefix = if index == 0 {
-                if spinning {
-                    format!(
-                        "\x1b[2m\x1b[36m{}\x1b[0m \x1b[2m↳\x1b[0m ",
-                        braille_frame(self.frame)
-                    )
-                } else {
-                    "  \x1b[2m↳\x1b[0m ".to_string()
-                }
-            } else {
-                "    ".to_string()
-            };
-            output.push(format!("{prefix}\x1b[33m{line}\x1b[0m"));
-        }
+        output.extend(command_lines);
         if self.show_output && self.max_output_rows > 0 {
             output.extend(self.rendered_log_lines(body_width));
         }
@@ -333,22 +397,7 @@ impl CommandLiveDisplay {
     }
 
     fn rendered_log_lines(&self, body_width: usize) -> Vec<String> {
-        let mut logical = self.completed.iter().cloned().collect::<Vec<_>>();
-        let mut pending = [
-            (CommandOutputStream::Stdout, &self.stdout),
-            (CommandOutputStream::Stderr, &self.stderr),
-        ];
-        pending.sort_by_key(|(_, state)| state.last_update);
-        for (stream, state) in pending {
-            if !state.current.is_empty() {
-                logical.push(CommandLogLine {
-                    stream,
-                    text: state.current.clone(),
-                    sequence: state.current_sequence.unwrap_or(state.last_update),
-                });
-            }
-        }
-        logical.sort_by_key(|line| line.sequence);
+        let logical = self.output.logical_lines();
         let mut rows = Vec::new();
         for line in logical {
             for text in wrap_plain_text(&line.text, body_width) {
@@ -359,7 +408,7 @@ impl CommandLiveDisplay {
                 });
             }
         }
-        let omitted = self.omitted_lines || rows.len() > self.max_output_rows;
+        let omitted = self.output.omitted_lines || rows.len() > self.max_output_rows;
         let keep = if omitted && self.max_output_rows > 1 {
             self.max_output_rows - 1
         } else {
@@ -425,6 +474,115 @@ fn command_from_arguments(arguments: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or(arguments);
     sanitize_terminal_text(command).trim().to_string()
+}
+
+const COMMAND_PREVIEW_HEAD_LINES: usize = 2;
+const COMMAND_PREVIEW_TAIL_LINES: usize = 4;
+
+#[derive(Clone, Copy)]
+enum CommandPreviewPrefix {
+    First,
+    Middle,
+    Last,
+    SoftWrap,
+    LastSoftWrap,
+}
+
+fn render_command_preview(
+    command: &str,
+    width: usize,
+    full: bool,
+    spinning: bool,
+    frame: usize,
+) -> Vec<String> {
+    let total_lines = command.split('\n').count();
+    let compact_lines = COMMAND_PREVIEW_HEAD_LINES + COMMAND_PREVIEW_TAIL_LINES;
+    let omitted_lines = if !full && total_lines > compact_lines {
+        Some(total_lines - compact_lines)
+    } else {
+        None
+    };
+    let logical_lines = if omitted_lines.is_some() {
+        command
+            .split('\n')
+            .take(COMMAND_PREVIEW_HEAD_LINES)
+            .chain(
+                command
+                    .split('\n')
+                    .skip(total_lines - COMMAND_PREVIEW_TAIL_LINES),
+            )
+            .collect::<Vec<_>>()
+    } else {
+        command.split('\n').collect::<Vec<_>>()
+    };
+    // Soft-wrap rows have two extra indentation columns after the tree marker.
+    let content_width = width.saturating_sub(6).max(1);
+    let mut rows = Vec::new();
+    for (index, logical_line) in logical_lines.iter().enumerate() {
+        if index == COMMAND_PREVIEW_HEAD_LINES {
+            if let Some(omitted) = omitted_lines {
+                let message = format!(
+                    "{} {omitted} {}",
+                    t("omitted", "已省略中间"),
+                    t("middle lines", "行")
+                );
+                rows.extend(
+                    wrap_plain_text(&message, content_width)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(wrapped_index, text)| {
+                            let prefix = if wrapped_index == 0 {
+                                "  ⋮ "
+                            } else {
+                                "  │   "
+                            };
+                            format!("\x1b[2m{prefix}{text}\x1b[0m")
+                        }),
+                );
+            }
+        }
+        let wrapped = wrap_plain_text(logical_line, content_width);
+        for (wrapped_index, text) in wrapped.iter().enumerate() {
+            let first_logical_line = index == 0;
+            let last_logical_line = index + 1 == logical_lines.len();
+            let last_wrapped_row = wrapped_index + 1 == wrapped.len();
+            let prefix = if first_logical_line && wrapped_index == 0 {
+                CommandPreviewPrefix::First
+            } else if last_logical_line && last_wrapped_row {
+                if wrapped_index == 0 {
+                    CommandPreviewPrefix::Last
+                } else {
+                    CommandPreviewPrefix::LastSoftWrap
+                }
+            } else if wrapped_index > 0 {
+                CommandPreviewPrefix::SoftWrap
+            } else {
+                CommandPreviewPrefix::Middle
+            };
+            rows.push(format_command_preview_line(prefix, text, spinning, frame));
+        }
+    }
+    rows
+}
+
+fn format_command_preview_line(
+    prefix: CommandPreviewPrefix,
+    text: &str,
+    spinning: bool,
+    frame: usize,
+) -> String {
+    let prefix = match prefix {
+        CommandPreviewPrefix::First if spinning => format!(
+            "\x1b[2m\x1b[36m{}\x1b[0m \x1b[2m↳\x1b[0m ",
+            braille_frame(frame)
+        ),
+        CommandPreviewPrefix::First => "  \x1b[2m↳\x1b[0m ".to_string(),
+        CommandPreviewPrefix::Middle => "  \x1b[2m│\x1b[0m ".to_string(),
+        CommandPreviewPrefix::Last => "  \x1b[2m└\x1b[0m ".to_string(),
+        CommandPreviewPrefix::SoftWrap => "  \x1b[2m│\x1b[0m   ".to_string(),
+        CommandPreviewPrefix::LastSoftWrap => "  \x1b[2m└\x1b[0m   ".to_string(),
+    };
+    format!("{prefix}\x1b[33m{text}\x1b[0m")
 }
 
 fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
@@ -613,81 +771,104 @@ pub fn print_markdown(markdown: &str) {
     println!("{}", skin.term_text(markdown.trim_end()));
 }
 
-pub fn print_token_usage(
-    turn_tokens: u64,
-    session_tokens: u64,
-    context_window: Option<usize>,
-    cumulative_tokens: Option<u64>,
-    estimated: bool,
-) -> Result<()> {
-    let output = token_usage_output(
-        turn_tokens,
-        session_tokens,
-        context_window,
-        cumulative_tokens,
-        estimated,
-    );
+/// Everything the token meters show. Grouped into one struct because the two
+/// cache rates each need a numerator *and* a denominator, and threading eight
+/// loose `u64`s through four call layers was already past readable.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TokenMeter {
+    pub turn_tokens: u64,
+    /// Denominator of the turn cache rate. A cache hit is an input-side
+    /// property — output tokens only enter the prompt on the *next* turn — so
+    /// the rate is read/prompt, never read/total, which is what every provider
+    /// reports too (DeepSeek splits the prompt into hit+miss; OpenAI's
+    /// `cached_tokens` is a subset of `prompt_tokens`; Anthropic names all
+    /// three fields `*_input_tokens`).
+    pub turn_prompt_tokens: u64,
+    pub turn_cached_tokens: u64,
+    pub session_tokens: u64,
+    pub context_window: Option<usize>,
+    /// Σ: session-lifetime total. `None` hides it on narrow terminals.
+    pub cumulative_tokens: Option<u64>,
+    pub cumulative_prompt_tokens: u64,
+    pub cumulative_cached_tokens: u64,
+}
+
+/// `None` when there is nothing honest to report: a provider that never said
+/// anything about caching must not be rendered as a flat 0%.
+pub(crate) fn cache_percent(cached: u64, prompt: u64) -> Option<u64> {
+    (cached > 0 && prompt > 0)
+        .then(|| ((cached as f64 / prompt as f64) * 100.0).round().min(100.0) as u64)
+}
+
+fn cache_suffix(cached: u64, prompt: u64) -> String {
+    cache_percent(cached, prompt)
+        .map(|percent| format!("(C{percent}%)"))
+        .unwrap_or_default()
+}
+
+pub fn print_token_usage(meter: &TokenMeter, estimated: bool) -> Result<()> {
+    let output = token_usage_output(meter, estimated);
     let mut stdout = io::stdout();
     write!(stdout, "{output}")?;
     stdout.flush()?;
     Ok(())
 }
 
-pub(crate) fn token_usage_output(
-    turn_tokens: u64,
-    session_tokens: u64,
-    context_window: Option<usize>,
-    cumulative_tokens: Option<u64>,
-    estimated: bool,
-) -> String {
+pub(crate) fn token_usage_output(meter: &TokenMeter, estimated: bool) -> String {
     let prefix = if estimated {
         t("Estimated ", "估算")
     } else {
         ""
     };
-    let line = format!(
-        "{prefix}Token: {}",
-        format_token_usage_inline(
-            turn_tokens,
-            session_tokens,
-            context_window,
-            cumulative_tokens
-        )
-    );
+    let line = format!("{prefix}Token: {}", format_token_usage_inline(meter));
     format!("\x1b[2m{line}\x1b[0m\n\n")
 }
 
-pub(crate) fn format_token_usage_inline(
-    turn_tokens: u64,
-    session_tokens: u64,
-    context_window: Option<usize>,
-    cumulative_tokens: Option<u64>,
-) -> String {
-    let context_window = context_window.map(|value| value as u64);
+pub(crate) fn format_token_usage_inline(meter: &TokenMeter) -> String {
+    format_token_usage_inline_opts(meter, true)
+}
+
+pub(crate) fn format_token_usage_inline_opts(meter: &TokenMeter, show_percent: bool) -> String {
+    let context_window = meter.context_window.map(|value| value as u64);
     let context = context_window
         .map(format_compact_count)
         .unwrap_or_else(|| "?".to_string());
     let usage_ratio = if let Some(context_window) = context_window.filter(|value| *value > 0) {
         format!(
             "{:.1}%",
-            session_tokens as f64 / context_window as f64 * 100.0
+            meter.session_tokens as f64 / context_window as f64 * 100.0
         )
     } else {
         "?".to_string()
     };
 
-    let mut session = format!(
-        "{}/{} ({usage_ratio})",
-        format_compact_count(session_tokens),
-        context,
-    );
-    if let Some(cumulative_tokens) = cumulative_tokens {
-        session.push_str(&format!(" · Σ{}", format_compact_count(cumulative_tokens)));
+    let mut session = if show_percent {
+        format!(
+            "{}/{}({usage_ratio})",
+            format_compact_count(meter.session_tokens),
+            context,
+        )
+    } else {
+        format!("{}/{}", format_compact_count(meter.session_tokens), context)
+    };
+    if let Some(cumulative_tokens) = meter.cumulative_tokens {
+        session.push_str(&format!(
+            " · Σ{}{}",
+            format_compact_count(cumulative_tokens),
+            cache_suffix(
+                meter.cumulative_cached_tokens,
+                meter.cumulative_prompt_tokens
+            ),
+        ));
     }
-    if turn_tokens == 0 {
+    if meter.turn_tokens == 0 {
         session
     } else {
-        format!("{} · {session}", format_compact_count(turn_tokens))
+        format!(
+            "{}{} · {session}",
+            format_compact_count(meter.turn_tokens),
+            cache_suffix(meter.turn_cached_tokens, meter.turn_prompt_tokens),
+        )
     }
 }
 
@@ -751,6 +932,7 @@ pub struct StreamRenderer {
     reasoning_started_at: Option<std::time::Instant>,
     reasoning_elapsed: Option<std::time::Duration>,
     tool_stats: BTreeMap<String, ToolStats>,
+    tool_seq: usize,
     readable_tool_names: bool,
     command_output_lines: usize,
     command_display: Option<CommandLiveDisplay>,
@@ -788,6 +970,7 @@ impl StreamRenderer {
             reasoning_started_at: None,
             reasoning_elapsed: None,
             tool_stats: BTreeMap::new(),
+            tool_seq: 0,
             readable_tool_names,
             command_output_lines,
             command_display: None,
@@ -883,7 +1066,7 @@ impl StreamRenderer {
             return Ok(());
         }
         self.reasoning_title = Some(title);
-        self.ensure_waiting_phase(self.reasoning_live_text())
+        self.ensure_waiting_phase(self.reasoning_live_text(), SpinnerStyle::Scanner)
     }
 
     pub fn start_reasoning_part(&mut self, received_at: std::time::Instant) -> Result<()> {
@@ -949,8 +1132,7 @@ impl StreamRenderer {
                 && !self.tool_stats.is_empty()
                 && self.wait_spinner.is_some()
             {
-                let header = self.tool_summary_header();
-                let sub = self.tool_summary_progress();
+                let (header, sub) = self.tool_summary_live();
                 self.set_tool_waiting_phase(&header, sub.as_deref());
             } else if self.reasoning_mode == ReasoningDisplayMode::Summary
                 && self.reasoning_started_at.is_some()
@@ -1015,7 +1197,7 @@ impl StreamRenderer {
             self.finalize_tools_summary()?;
             self.record_reasoning_text(&text);
             self.mode = Some(ChatStreamKind::Reasoning);
-            self.ensure_waiting_phase(self.reasoning_live_text())?;
+            self.ensure_waiting_phase(self.reasoning_live_text(), SpinnerStyle::Scanner)?;
             return Ok(());
         }
         self.stop_waiting()?;
@@ -1056,6 +1238,7 @@ impl StreamRenderer {
                 arguments,
                 self.command_output_lines,
                 self.tool_call_mode != ToolCallDisplayMode::Hidden,
+                self.tool_call_mode == ToolCallDisplayMode::Full,
             );
             if self.live_summary {
                 display.tick(&mut self.output)?;
@@ -1065,7 +1248,7 @@ impl StreamRenderer {
             return Ok(());
         }
         if is_subagent_tool(name) && self.tool_call_mode != ToolCallDisplayMode::Hidden {
-            let stats = self.tool_stats.entry(name.to_string()).or_default();
+            let stats = self.tool_stats_entry(name);
             stats.started_at = Some(std::time::Instant::now());
             stats.elapsed = None;
         }
@@ -1076,12 +1259,25 @@ impl StreamRenderer {
             write_tool_payload(stdout, t("args", "参数"), arguments)?;
             stdout.flush()?;
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-            let stats = self.tool_stats.entry(name.to_string()).or_default();
+            let stats = self.tool_stats_entry(name);
             stats.calls += 1;
             stats.subject = tool_subject(name, arguments);
             self.ensure_tool_waiting_phase()?;
         }
         Ok(())
+    }
+
+    pub fn write_tool_preparing(&mut self, name: &str) -> Result<()> {
+        if self.plain {
+            return Ok(());
+        }
+        let Some(phase) = crate::tools::preparing_phase(name) else {
+            return Ok(());
+        };
+        self.release_transient_output()?;
+        // Braille + the dim tool palette: this is a tool starting up, not the
+        // model thinking, and the scanner/green pair reads as the latter.
+        self.ensure_waiting_phase(format!("~ {phase}"), SpinnerStyle::Braille)
     }
 
     pub fn write_tool_result(&mut self, name: &str, ok: bool, output: &str) -> Result<()> {
@@ -1120,7 +1316,7 @@ impl StreamRenderer {
             if write_todo_table(stdout, output)? {
                 stdout.flush()?;
                 if self.tool_call_mode == ToolCallDisplayMode::Summary {
-                    let stats = self.tool_stats.entry(name.to_string()).or_default();
+                    let stats = self.tool_stats_entry(name);
                     stats.ok += 1;
                     stats.progress = None;
                     self.tool_stats.clear();
@@ -1144,14 +1340,21 @@ impl StreamRenderer {
             stdout.flush()?;
             self.tool_stats.remove(name);
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-            let stats = self.tool_stats.entry(name.to_string()).or_default();
+            let stats = self.tool_stats_entry(name);
             if ok {
                 stats.ok += 1;
             } else {
                 stats.error += 1;
             }
             stats.progress = None;
-            self.finalize_tools_summary()?;
+            if self.tool_stats.values().any(|stats| !stats.settled()) {
+                // Siblings still running (parallel subagents): freeze this
+                // tool's block in the live area; commit only when the whole
+                // batch settles.
+                self.update_tool_summary_display()?;
+            } else {
+                self.finalize_tools_summary()?;
+            }
         }
         Ok(())
     }
@@ -1200,6 +1403,23 @@ impl StreamRenderer {
             self.prepare_for_external_output()?;
             return Ok(());
         }
+        if let Some(text) = message.strip_prefix("__subagent_detach__") {
+            if self.tool_call_mode == ToolCallDisplayMode::Full {
+                self.release_transient_output()?;
+                let display_name = self.display_tool_name(name);
+                let stdout = &mut self.output;
+                writeln!(stdout, "{} {}: {text}", t("progress", "进度"), display_name)?;
+                stdout.flush()?;
+            } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
+                // Lands as the block's `↳` subject line, not the final `✓`
+                // stats line — detach is a fact about the call, not a result.
+                let stats = self.tool_stats_entry(name);
+                stats.subject = Some(text.to_string());
+                stats.detached = true;
+                self.update_tool_summary_display()?;
+            }
+            return Ok(());
+        }
         if let Some(text) = message.strip_prefix("__subagent_stats__") {
             if self.tool_call_mode == ToolCallDisplayMode::Full {
                 self.release_transient_output()?;
@@ -1208,10 +1428,7 @@ impl StreamRenderer {
                 writeln!(stdout, "{} {}: {text}", t("progress", "进度"), display_name)?;
                 stdout.flush()?;
             } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-                self.tool_stats
-                    .entry(name.to_string())
-                    .or_default()
-                    .final_progress = Some(text.to_string());
+                self.tool_stats_entry(name).final_progress = Some(text.to_string());
                 self.update_tool_summary_display()?;
             }
             return Ok(());
@@ -1306,10 +1523,7 @@ impl StreamRenderer {
             )?;
             stdout.flush()?;
         } else if self.tool_call_mode == ToolCallDisplayMode::Summary {
-            self.tool_stats
-                .entry(name.to_string())
-                .or_default()
-                .progress = Some(message.to_string());
+            self.tool_stats_entry(name).progress = Some(message.to_string());
             self.update_tool_summary_display()?;
         }
         Ok(())
@@ -1318,8 +1532,7 @@ impl StreamRenderer {
     fn update_tool_summary_display(&mut self) -> Result<()> {
         self.end_subagent_stream_line()?;
         if self.wait_spinner.is_some() {
-            let header = self.tool_summary_header();
-            let sub = self.tool_summary_progress();
+            let (header, sub) = self.tool_summary_live();
             self.set_tool_waiting_phase(&header, sub.as_deref());
         } else {
             self.end_active_stream_line()?;
@@ -1603,63 +1816,108 @@ impl StreamRenderer {
         self.reasoning_started_at
             .get_or_insert_with(std::time::Instant::now);
         self.reasoning_text.push_str(text);
-        self.reasoning_tokens = crate::token_estimate::estimate_tokens(&self.reasoning_text);
+        // Incremental: recounting the whole accumulated text on every chunk is
+        // O(n²) over the stream and the value only feeds the spinner label.
+        // Per-chunk sums drift <1% from a full recount (BPE merges across
+        // chunk boundaries) — fine for a display estimate.
+        self.reasoning_tokens += crate::token_estimate::estimate_tokens(text);
+    }
+
+    /// Gets or creates a tool's stats entry, stamping first-seen order so
+    /// parallel blocks render in launch order rather than name order.
+    fn tool_stats_entry(&mut self, name: &str) -> &mut ToolStats {
+        self.tool_seq += 1;
+        let seq = self.tool_seq;
+        self.tool_stats
+            .entry(name.to_string())
+            .or_insert_with(|| ToolStats {
+                seq,
+                ..ToolStats::default()
+            })
+    }
+
+    /// Tools in first-seen order (stable for direct test inserts with seq 0).
+    fn ordered_tool_stats(&self) -> Vec<(&String, &ToolStats)> {
+        let mut entries: Vec<_> = self.tool_stats.iter().collect();
+        entries.sort_by_key(|(_, stats)| stats.seq);
+        entries
     }
 
     fn tool_summary_text(&self) -> String {
-        let parts = self
-            .tool_stats
-            .iter()
-            .map(|(name, stats)| {
-                let display = self.display_tool_name(name);
-                let mut header = tool_status_text(&display, stats, is_subagent_tool(name));
-                if inline_tool_subject(name) {
-                    if let Some(subject) = &stats.subject {
-                        header.push_str(" · ");
-                        header.push_str(subject);
-                    }
-                }
-                let progress_text = stats.final_progress.as_ref().or(stats.progress.as_ref());
-                let progress_prefix = if stats.final_progress.is_some() {
-                    "✓"
-                } else {
-                    "↳"
-                };
-                let is_final_progress = stats.final_progress.is_some();
-                let subject = (!inline_tool_subject(name))
-                    .then(|| stats.subject.as_ref().map(|subject| format!("↳ {subject}")))
-                    .flatten();
-                let progress = progress_text.and_then(|message| {
-                    let progress = message
-                        .lines()
-                        .filter(|line| !line.trim().is_empty())
-                        .map(|line| {
-                            let line = if is_final_progress {
-                                clip_progress_line_preserving_spaces(line, 120)
-                            } else {
-                                clip_progress_line(line, 120)
-                            };
-                            format!("{progress_prefix} {line}")
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    (!progress.is_empty()).then_some(progress)
-                });
-                [Some(header), subject, progress]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
+        self.ordered_tool_stats()
+            .into_iter()
+            .map(|(name, stats)| self.tool_block_lines(name, stats, false).join("\n"))
             .collect::<Vec<_>>()
-            .join(", ");
-        self.tool_summary_with_prefix(parts)
+            .join("\n\n")
+    }
+
+    /// Builds one tool's display block: a `~`-prefixed status header plus
+    /// its own subject/progress lines. In `live` mode a still-running tool's
+    /// header carries [`wait_spinner::BLOCK_MARKER`] so the spinner animates
+    /// it, and a settled tool freezes into its final `✓` stats in place. The
+    /// committed variant (`live == false`) prefers `final_progress` with `✓`.
+    fn tool_block_lines(&self, name: &str, stats: &ToolStats, live: bool) -> Vec<String> {
+        let display = self.display_tool_name(name);
+        let mut header = tool_status_text(&display, stats, is_subagent_tool(name));
+        if inline_tool_subject(name) {
+            if let Some(subject) = &stats.subject {
+                header.push_str(" · ");
+                header.push_str(subject);
+            }
+        }
+        let header = self.tool_summary_with_prefix(header);
+        // In live mode a running block's detail lines are indented to sit
+        // under its spinner glyph; a settled block drops the glyph and sits
+        // flush, matching the committed layout.
+        let running_live = live && !stats.settled();
+        // Detail lines always sit two columns in, matching command blocks
+        // (`$ …` / `  ↳ cmd` / `  │ output`) and avoiding the leftward jump
+        // a block used to make when it settled.
+        let detail_indent = "  ";
+        let mut lines = Vec::new();
+        if running_live {
+            lines.push(format!("{}{header}", wait_spinner::BLOCK_MARKER));
+        } else {
+            lines.push(header);
+        }
+        if !inline_tool_subject(name) {
+            if let Some(subject) = &stats.subject {
+                // Subagent headers already carry the description — don't
+                // repeat it as a subject line.
+                if !lines[0].contains(subject.as_str()) {
+                    lines.push(format!("{detail_indent}↳ {subject}"));
+                }
+            }
+        }
+        let (progress_text, is_final) = if live {
+            if stats.settled() {
+                (stats.final_progress.as_ref(), true)
+            } else {
+                (stats.progress.as_ref(), false)
+            }
+        } else if stats.final_progress.is_some() {
+            (stats.final_progress.as_ref(), true)
+        } else {
+            (stats.progress.as_ref(), false)
+        };
+        let progress_prefix = if is_final { "✓" } else { "↳" };
+        if let Some(message) = progress_text {
+            for line in message.lines().filter(|line| !line.trim().is_empty()) {
+                let line = if is_final {
+                    clip_progress_line_preserving_spaces(line, 120)
+                } else {
+                    clip_progress_line(line, 120)
+                };
+                lines.push(format!("{detail_indent}{progress_prefix} {line}"));
+            }
+        }
+        lines
     }
 
     fn tool_summary_header(&self) -> String {
         let parts = self
-            .tool_stats
-            .iter()
+            .ordered_tool_stats()
+            .into_iter()
             .map(|(name, stats)| {
                 let display = self.display_tool_name(name);
                 let mut header = tool_status_text(&display, stats, is_subagent_tool(name));
@@ -1674,6 +1932,33 @@ impl StreamRenderer {
             .collect::<Vec<_>>()
             .join(", ");
         self.tool_summary_with_prefix(parts)
+    }
+
+    /// Live status for the wait spinner. A single tool keeps the classic
+    /// one-line phase + progress sub-block. Multiple tools (e.g. parallel
+    /// subagents) switch the spinner into block mode: the phase line is
+    /// empty and every tool renders as its own block — running blocks carry
+    /// their own animated glyph, settled blocks freeze into their final
+    /// stats, and blocks are separated by blank lines:
+    ///
+    /// ```text
+    /// ⠋ ~ 子代理·任务A×1 运行中 · 3s
+    ///   ↳ 任务A进度
+    ///
+    ///   ~ 子代理·任务B×1 ok · 2s
+    ///   ✓ 工具调用 1 次
+    /// ```
+    fn tool_summary_live(&self) -> (String, Option<String>) {
+        if self.tool_stats.len() <= 1 {
+            return (self.tool_summary_header(), self.tool_summary_progress());
+        }
+        let blocks = self
+            .ordered_tool_stats()
+            .into_iter()
+            .map(|(name, stats)| self.tool_block_lines(name, stats, true).join("\n"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        (String::new(), Some(blocks))
     }
 
     fn tool_summary_with_prefix(&self, parts: String) -> String {
@@ -1691,18 +1976,22 @@ impl StreamRenderer {
     }
 
     fn tool_summary_progress(&self) -> Option<String> {
-        for (name, stats) in &self.tool_stats {
+        for (name, stats) in self.ordered_tool_stats() {
             let mut lines = Vec::new();
             if !inline_tool_subject(name) {
                 if let Some(subject) = &stats.subject {
-                    lines.push(format!("↳ {subject}"));
+                    // Skip subjects already shown in the header (subagent
+                    // descriptions are part of the display name).
+                    if !self.display_tool_name(name).contains(subject.as_str()) {
+                        lines.push(format!("  ↳ {subject}"));
+                    }
                 }
             }
             if let Some(message) = &stats.progress {
                 let progress = message
                     .lines()
                     .filter(|line| !line.trim().is_empty())
-                    .map(|line| format!("↳ {}", clip_progress_line(line, 120)))
+                    .map(|line| format!("  ↳ {}", clip_progress_line(line, 120)))
                     .collect::<Vec<_>>()
                     .join("\n");
                 if !progress.is_empty() {
@@ -1733,6 +2022,16 @@ impl StreamRenderer {
     }
 
     fn display_tool_name<'a>(&self, name: &'a str) -> String {
+        // Subagents keep their per-call description so parallel task calls
+        // show as separate lines: "子代理·<描述>".
+        if let Some(description) = name.strip_prefix("task:") {
+            let base = if self.readable_tool_names {
+                readable_tool_name("task")
+            } else {
+                "task".to_string()
+            };
+            return format!("{base}·{description}");
+        }
         let name = tool_event_base_name(name);
         if self.readable_tool_names {
             readable_tool_name(name)
@@ -1769,7 +2068,7 @@ impl StreamRenderer {
         }
     }
 
-    fn ensure_waiting_phase(&mut self, phase: String) -> Result<()> {
+    fn ensure_waiting_phase(&mut self, phase: String, style: SpinnerStyle) -> Result<()> {
         if self.command_display.is_some() {
             return Ok(());
         }
@@ -1777,11 +2076,11 @@ impl StreamRenderer {
             if self.summary_line_active {
                 self.clear_summary_lines()?;
             }
-            self.render_summary_line(&phase, SummaryStyle::Reasoning)?;
+            self.render_summary_line(&phase, summary_style_for(style))?;
             return Ok(());
         }
         if self.wait_spinner.is_none() {
-            self.wait_spinner = Some(WaitSpinner::start(phase, SpinnerStyle::Scanner));
+            self.wait_spinner = Some(WaitSpinner::start(phase, style));
             self.last_tick = None;
             self.tick_spinner()?;
         } else {
@@ -1792,13 +2091,14 @@ impl StreamRenderer {
 
     fn ensure_tool_waiting_phase(&mut self) -> Result<()> {
         debug_assert!(self.command_display.is_none());
-        let header = self.tool_summary_header();
-        let sub = self.tool_summary_progress();
+        let (header, sub) = self.tool_summary_live();
         if self.plain || !self.live_summary {
             let summary = match &sub {
+                Some(s) if header.is_empty() => s.clone(),
                 Some(s) => format!("{header}\n{s}"),
                 None => header,
             };
+            let summary = summary.replace(wait_spinner::BLOCK_MARKER, "");
             if self.summary_line_active {
                 self.clear_summary_lines()?;
             }
@@ -1945,6 +2245,11 @@ struct ToolStats {
     final_progress: Option<String>,
     started_at: Option<std::time::Instant>,
     elapsed: Option<std::time::Duration>,
+    /// The subagent handed itself off to the background. Its call returned at
+    /// once, so the elapsed timer would only ever read `0s` — and worse, imply
+    /// the work finished instantly. The job strip tracks it from here on.
+    detached: bool,
+    seq: usize,
 }
 
 impl ToolStats {
@@ -1952,12 +2257,26 @@ impl ToolStats {
         self.elapsed
             .or_else(|| self.started_at.map(|started| started.elapsed()))
     }
+
+    /// Every issued call has completed (ok or err) — nothing running.
+    fn settled(&self) -> bool {
+        self.calls > 0 && self.ok + self.error >= self.calls
+    }
 }
 
 #[derive(Clone, Copy)]
 enum SummaryStyle {
     Reasoning,
     Tool,
+}
+
+/// The still-line equivalent of a spinner style, for terminals that cannot
+/// animate — so a phase keeps its identity (thinking vs tool) either way.
+fn summary_style_for(style: SpinnerStyle) -> SummaryStyle {
+    match style {
+        SpinnerStyle::Scanner => SummaryStyle::Reasoning,
+        SpinnerStyle::Braille => SummaryStyle::Tool,
+    }
 }
 
 fn style_summary_text(text: &str, style: SummaryStyle) -> String {
@@ -1998,7 +2317,7 @@ fn tool_status_text(name: &str, stats: &ToolStats, subagent: bool) -> String {
     } else {
         format!("{name}×{calls} ok:{}", stats.ok)
     };
-    if subagent {
+    if subagent && !stats.detached {
         if let Some(elapsed) = stats.elapsed() {
             return format!("{text} · {}", format_elapsed(elapsed));
         }
@@ -2047,13 +2366,8 @@ fn is_silent_tool(name: &str) -> bool {
 }
 
 fn is_subagent_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "linux_input_method_diagnose"
-            | "deep_research_linux_game_compatibility"
-            | "deep_research"
-            | "task"
-    )
+    let name = tool_event_base_name(name);
+    matches!(name, "deep_research" | "task")
 }
 
 fn tool_event_base_name(name: &str) -> &str {
@@ -2061,6 +2375,8 @@ fn tool_event_base_name(name: &str) -> &str {
         "load_skill"
     } else if name.starts_with("load_tools:") {
         "load_tools"
+    } else if name.starts_with("task:") {
+        "task"
     } else {
         name
     }
@@ -2089,9 +2405,26 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         | "fcitx5_input_method_wiki_qurey" => string_arg(&args, &["query", "topic"]),
         "archwiki_query" | "query_moegirl" => string_arg(&args, &["title", "query"]),
         "search_knowledge_base_by_name" => string_arg(&args, &["file_name_query"]),
-        "read_file" | "write_file" | "edit_file" | "edit_string" | "trash_path"
-        | "register_script" => string_arg(&args, &["path"]),
-        "run_command" => string_arg(&args, &["command"]),
+        "read_file" => {
+            let path = string_arg(&args, &["path"])?;
+            Some(match read_page_label(&args) {
+                Some(page) => format!("{path} ({page})"),
+                None => path,
+            })
+        }
+        "write_file" | "edit_file" | "edit_string" | "trash_path" | "register_script" => {
+            string_arg(&args, &["path"])
+        }
+        "run_command" => {
+            let command = string_arg(&args, &["command"])?;
+            Some(
+                if args.get("background").and_then(Value::as_bool) == Some(true) {
+                    format!("[后台] {command}")
+                } else {
+                    command
+                },
+            )
+        }
         "read_knowledge_base_file" | "edit_knowledge_base_file" | "remove_knowledge_base_file" => {
             string_arg(&args, &["file_name"])
         }
@@ -2107,6 +2440,8 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         }
         "web_fetch" => string_arg(&args, &["url"]).and_then(|url| safe_url_subject(&url)),
         "load_skill" => string_arg(&args, &["name"]),
+        "create_skill" | "update_skill" | "delete_skill" => string_arg(&args, &["name"]),
+        "publish_skill" => string_arg(&args, &["draft_id"]),
         "load_tools" => args.get("names").and_then(Value::as_array).map(|names| {
             names
                 .iter()
@@ -2123,10 +2458,7 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
                 .join(t(", ", "、"))
         }),
         "deep_research" => string_arg(&args, &["topic"]),
-        "deep_research_linux_game_compatibility" => string_arg(&args, &["game"]),
-        "linux_input_method_diagnose" | "check_issue" => {
-            string_arg(&args, &["target", "area", "issue", "symptom"])
-        }
+        "check_issue" => string_arg(&args, &["target", "area", "issue", "symptom"]),
         "get_weather" => string_arg(&args, &["location"])
             .or_else(|| Some(t("automatic location", "自动定位").to_string())),
         "get_exchange_rate" => {
@@ -2162,6 +2494,23 @@ pub(crate) fn tool_subject(name: &str, arguments: &str) -> Option<String> {
         _ => None,
     }?;
     safe_inline_subject(&value)
+}
+
+/// Page label for a read_file call: `L<start>-<end>` when the range is
+/// bounded, `L<start>+` for an open tail. `None` for a plain full read so
+/// the common case stays a bare path.
+fn read_page_label(args: &Value) -> Option<String> {
+    let offset = args.get("offset").and_then(Value::as_u64);
+    let limit = args.get("limit").and_then(Value::as_u64);
+    let start = offset.unwrap_or(1).max(1);
+    match (offset, limit) {
+        (None, None) => None,
+        (_, Some(limit)) => Some(format!(
+            "L{start}-{}",
+            start.saturating_add(limit.saturating_sub(1))
+        )),
+        (Some(_), None) => Some(format!("L{start}+")),
+    }
 }
 
 fn string_arg(args: &Value, keys: &[&str]) -> Option<String> {
@@ -2500,7 +2849,7 @@ impl MarkdownLineRenderer {
     }
 }
 
-fn render_markdown_line(line: &str) -> String {
+pub(crate) fn render_markdown_line(line: &str) -> String {
     let trimmed = line.trim_start();
     let indent = &line[..line.len() - trimmed.len()];
     if let Some(header) = render_header(trimmed) {
@@ -3450,27 +3799,11 @@ fn write_command_block_with_status(
     status: CommandStatus,
 ) -> Result<()> {
     let command = command_from_arguments(arguments);
-    let total_lines = command.lines().count();
-    let total_chars = command.chars().count();
     writeln!(stdout, "{}", command_heading_line(status))?;
-    if total_lines > 1 {
-        writeln!(
-            stdout,
-            "\x1b[2m  ↳ {total_lines} {} · {total_chars} {}\x1b[0m",
-            t("lines", "行"),
-            t("chars", "字符")
-        )?;
-    } else {
-        let terminal_width = terminal::size().map(|(w, _)| usize::from(w)).unwrap_or(120);
-        let avail = terminal_width.saturating_sub(5).max(1);
-        let wrapped = wrap_plain_text(&command, avail);
-        for (i, line) in wrapped.iter().enumerate() {
-            if i == 0 {
-                writeln!(stdout, "\x1b[2m  ↳ \x1b[0m\x1b[33m{line}\x1b[0m")?;
-            } else {
-                writeln!(stdout, "    \x1b[33m{line}\x1b[0m")?;
-            }
-        }
+    let terminal_width = terminal::size().map(|(w, _)| usize::from(w)).unwrap_or(120);
+    let usable = terminal_width.saturating_sub(1).max(5);
+    for line in render_command_preview(&command, usable, true, false, 0) {
+        writeln!(stdout, "{line}")?;
     }
     Ok(())
 }
@@ -3741,7 +4074,7 @@ mod tests {
 
     #[test]
     fn command_preview_limits_physical_rows_and_keeps_tail() {
-        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 3, true);
+        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 3, true, false);
         display.push(CommandOutputStream::Stdout, b"one\ntwo\nthree\nfour\n");
 
         let lines = visible_command_lines(display.rendered_log_lines(80));
@@ -3754,7 +4087,7 @@ mod tests {
 
     #[test]
     fn command_preview_counts_soft_wrapped_rows() {
-        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 3, true);
+        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 3, true, false);
         display.push(
             CommandOutputStream::Stdout,
             "第一行很长\n第二行\n".as_bytes(),
@@ -3770,7 +4103,7 @@ mod tests {
 
     #[test]
     fn command_preview_orders_interleaved_streams_and_colors_stderr() {
-        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 4, true);
+        let mut display = CommandLiveDisplay::new(r#"{"command":"demo"}"#, 4, true, false);
         display.push(CommandOutputStream::Stdout, b"out");
         display.push(CommandOutputStream::Stderr, b"err");
 
@@ -3785,8 +4118,41 @@ mod tests {
     }
 
     #[test]
+    fn shared_command_output_preview_sanitizes_and_keeps_tail() {
+        let mut output = CommandOutputTail::new(3);
+        output.push(
+            CommandOutputStream::Stdout,
+            b"old\nprogress 10%\rprogress 20%\n",
+        );
+        output.push(CommandOutputStream::Stderr, b"\x1b[31mwarning\x1b[0m\n");
+        let chinese = "完成".as_bytes();
+        output.push(CommandOutputStream::Stdout, &chinese[..2]);
+        output.push(CommandOutputStream::Stdout, &chinese[2..]);
+
+        let preview = output.preview();
+
+        assert!(preview.omitted);
+        assert_eq!(preview.lines.len(), 3);
+        assert_eq!(preview.lines[0].text, "progress 20%");
+        assert_eq!(preview.lines[1].stream, "stderr");
+        assert_eq!(preview.lines[1].text, "warning");
+        assert_eq!(preview.lines[2].text, "完成");
+    }
+
+    #[test]
+    fn shared_command_output_preview_can_be_disabled() {
+        let mut output = CommandOutputTail::new(0);
+        output.push(CommandOutputStream::Stdout, b"hidden\n");
+
+        let preview = output.preview();
+
+        assert!(preview.lines.is_empty());
+        assert!(!preview.omitted);
+    }
+
+    #[test]
     fn command_heading_is_part_of_live_block_and_updates_status() {
-        let mut display = CommandLiveDisplay::new(r#"{"command":"printf ok"}"#, 2, true);
+        let mut display = CommandLiveDisplay::new(r#"{"command":"printf ok"}"#, 2, true, false);
         let running = visible_command_lines(display.rendered_lines(80, true));
         let command = t("run command", "运行命令");
         assert_eq!(
@@ -3808,8 +4174,111 @@ mod tests {
     }
 
     #[test]
+    fn compact_multiline_command_keeps_two_head_and_four_tail_lines() {
+        let command = (1..=10)
+            .map(|line| format!("command line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let arguments = serde_json::json!({ "command": command }).to_string();
+        let display = CommandLiveDisplay::new(&arguments, 0, false, false);
+
+        let lines = visible_command_lines(display.rendered_lines(120, false));
+
+        assert_eq!(lines.len(), 8);
+        assert!(lines[1].starts_with("  ↳ ") && lines[1].ends_with("command line 1"));
+        assert!(lines[2].starts_with("  │ ") && lines[2].ends_with("command line 2"));
+        assert!(lines[3].contains('4'));
+        assert!(lines[3].contains("omitted") || lines[3].contains("省略"));
+        assert!(lines[4].ends_with("command line 7"));
+        assert!(lines[5].ends_with("command line 8"));
+        assert!(lines[6].ends_with("command line 9"));
+        assert!(lines[7].starts_with("  └ ") && lines[7].ends_with("command line 10"));
+        assert!(!lines.iter().any(|line| line.ends_with("command line 3")));
+        assert!(!lines.iter().any(|line| line.ends_with("command line 6")));
+    }
+
+    #[test]
+    fn full_multiline_command_keeps_every_logical_line() {
+        let command = (1..=10)
+            .map(|line| format!("command line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let arguments = serde_json::json!({ "command": command }).to_string();
+        let display = CommandLiveDisplay::new(&arguments, 0, false, true);
+
+        let lines = visible_command_lines(display.rendered_lines(120, false));
+
+        assert_eq!(lines.len(), 11);
+        assert!(lines.iter().any(|line| line.ends_with("command line 3")));
+        assert!(lines.iter().any(|line| line.ends_with("command line 6")));
+        assert!(!lines
+            .iter()
+            .any(|line| line.contains("omitted") || line.contains("省略")));
+    }
+
+    #[test]
+    fn multiline_command_soft_wraps_with_continuation_prefix() {
+        let arguments = serde_json::json!({
+            "command": "1234567890abcdef\nlast"
+        })
+        .to_string();
+        let display = CommandLiveDisplay::new(&arguments, 0, false, false);
+
+        let lines = visible_command_lines(display.rendered_lines(16, false));
+
+        assert_eq!(lines[1], "  ↳ 123456789");
+        assert_eq!(lines[2], "  │   0abcdef");
+        assert_eq!(lines[3], "  └ last");
+    }
+
+    #[test]
+    fn final_multiline_command_wrap_closes_tree_on_last_physical_row() {
+        let arguments = serde_json::json!({
+            "command": "first\n1234567890abcdef"
+        })
+        .to_string();
+        let display = CommandLiveDisplay::new(&arguments, 0, false, false);
+
+        let lines = visible_command_lines(display.rendered_lines(16, false));
+
+        assert_eq!(lines[2], "  │ 123456789");
+        assert_eq!(lines[3], "  └   0abcdef");
+    }
+
+    #[test]
+    fn omitted_command_notice_wraps_within_narrow_width() {
+        let command = (1..=10)
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let lines = render_command_preview(&command, 12, false, false, 0);
+
+        assert!(lines.iter().all(|line| command_ansi_width(line) <= 12));
+        assert!(visible_command_lines(lines)
+            .iter()
+            .any(|line| line.contains('4')));
+    }
+
+    #[test]
+    fn static_full_command_block_shows_multiline_body() {
+        let arguments = serde_json::json!({
+            "command": "first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh"
+        })
+        .to_string();
+        let mut output = Vec::new();
+
+        write_command_block_with_status(&mut output, &arguments, CommandStatus::Ok).unwrap();
+
+        let output = strip_ansi_for_test(&String::from_utf8(output).unwrap());
+        assert!(output.contains("  │ third\n"));
+        assert!(output.contains("  └ seventh\n"));
+        assert!(!output.contains("omitted") && !output.contains("省略"));
+    }
+
+    #[test]
     fn command_display_detects_output_row_growth_before_redraw() {
-        let mut display = CommandLiveDisplay::new(r#"{"command":"printf ok"}"#, 3, true);
+        let mut display = CommandLiveDisplay::new(r#"{"command":"printf ok"}"#, 3, true, false);
         display.rendered_line_widths = display
             .rendered_lines(80, true)
             .iter()
@@ -3873,8 +4342,8 @@ mod tests {
         assert_eq!(
             renderer.tool_summary_text(),
             format!(
-                "~ {}×1 {}\n↳ first subject",
-                t("Web search", "网页搜索"),
+                "~ {}×1 {}\n  ↳ first subject",
+                t("Web search", "网络搜索"),
                 t("running", "运行中")
             )
         );
@@ -3889,8 +4358,8 @@ mod tests {
         assert_eq!(
             renderer.tool_summary_text(),
             format!(
-                "~ {}×1 {}\n↳ second subject",
-                t("Web search", "网页搜索"),
+                "~ {}×1 {}\n  ↳ second subject",
+                t("Web search", "网络搜索"),
                 t("running", "运行中")
             )
         );
@@ -3919,7 +4388,7 @@ mod tests {
         assert_eq!(
             renderer.tool_summary_text(),
             format!(
-                "~ {}×1 {} · 0s\n↳ 确认工作区环境",
+                "~ {}×1 {} · 0s\n  ↳ 确认工作区环境",
                 t("Subagent", "子代理"),
                 t("running", "运行中")
             )
@@ -3930,7 +4399,7 @@ mod tests {
         assert_eq!(
             renderer.tool_summary_text(),
             format!(
-                "~ {}×1 {} · 2s\n↳ 确认工作区环境",
+                "~ {}×1 {} · 2s\n  ↳ 确认工作区环境",
                 t("Subagent", "子代理"),
                 t("running", "运行中")
             )
@@ -4032,16 +4501,71 @@ mod tests {
     #[test]
     fn token_usage_hides_zero_turn_tokens() {
         assert_eq!(
-            format_token_usage_inline(0, 1_300, Some(272_000), None),
-            "1.3k/272k (0.5%)"
+            format_token_usage_inline(&TokenMeter {
+                session_tokens: 1_300,
+                context_window: Some(272_000),
+                ..Default::default()
+            }),
+            "1.3k/272k(0.5%)"
         );
         assert_eq!(
-            format_token_usage_inline(1_300, 1_300, Some(272_000), None),
-            "1.3k · 1.3k/272k (0.5%)"
+            format_token_usage_inline(&TokenMeter {
+                turn_tokens: 1_300,
+                session_tokens: 1_300,
+                context_window: Some(272_000),
+                ..Default::default()
+            }),
+            "1.3k · 1.3k/272k(0.5%)"
         );
         assert_eq!(
-            format_token_usage_inline(5_300, 10_000, Some(200_000), Some(86_200)),
-            "5.3k · 10k/200k (5.0%) · Σ86.2k"
+            format_token_usage_inline(&TokenMeter {
+                turn_tokens: 5_300,
+                session_tokens: 10_000,
+                context_window: Some(200_000),
+                cumulative_tokens: Some(86_200),
+                ..Default::default()
+            }),
+            "5.3k · 10k/200k(5.0%) · Σ86.2k"
+        );
+    }
+
+    #[test]
+    fn a_cache_rate_divides_by_the_prompt_not_the_whole_turn() {
+        // 24.8k turn = 12.0k prompt + 12.8k output, 11.2k of the prompt cached.
+        // Dividing by the turn total would report 45% and would sag further the
+        // longer the model talked, which says nothing about the cache.
+        let meter = TokenMeter {
+            turn_tokens: 24_800,
+            turn_prompt_tokens: 12_000,
+            turn_cached_tokens: 11_200,
+            session_tokens: 12_000,
+            context_window: Some(200_000),
+            cumulative_tokens: Some(380_000),
+            cumulative_prompt_tokens: 248_000,
+            cumulative_cached_tokens: 226_000,
+        };
+        assert_eq!(
+            format_token_usage_inline(&meter),
+            "24.8k(C93%) · 12k/200k(6.0%) · Σ380k(C91%)"
+        );
+    }
+
+    #[test]
+    fn a_provider_that_reports_no_cache_shows_no_rate() {
+        // Turns recorded before the cache columns existed read as zeros; a flat
+        // "C0%" would be a claim the database cannot support.
+        let meter = TokenMeter {
+            turn_tokens: 5_300,
+            turn_prompt_tokens: 4_000,
+            session_tokens: 10_000,
+            context_window: Some(200_000),
+            cumulative_tokens: Some(86_200),
+            cumulative_prompt_tokens: 70_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            format_token_usage_inline(&meter),
+            "5.3k · 10k/200k(5.0%) · Σ86.2k"
         );
     }
 
@@ -4070,7 +4594,7 @@ mod tests {
         let output = render_table(&[
             "| 项目 | 内容 |".to_string(),
             "|---|---|".to_string(),
-            "| 名字 | 老周 / Laozhou |".to_string(),
+            "| 名字 | 未有 / Laozhou |".to_string(),
             "| 年龄 | 18 |".to_string(),
         ]);
         let terminal_width = terminal::size()
@@ -4394,6 +4918,31 @@ mod tests {
     }
 
     #[test]
+    fn detached_subagents_drop_the_meaningless_elapsed_timer() {
+        let finished = ToolStats {
+            calls: 1,
+            ok: 1,
+            elapsed: Some(std::time::Duration::from_secs(12)),
+            ..ToolStats::default()
+        };
+        assert_eq!(
+            tool_status_text("子代理", &finished, true),
+            "子代理×1 ok · 12s"
+        );
+
+        // Handing off to the background returns immediately, so the timer only
+        // ever read `0s` — which looked like the work had finished instantly.
+        let detached = ToolStats {
+            calls: 1,
+            ok: 1,
+            elapsed: Some(std::time::Duration::from_millis(3)),
+            detached: true,
+            ..ToolStats::default()
+        };
+        assert_eq!(tool_status_text("子代理", &detached, true), "子代理×1 ok");
+    }
+
+    #[test]
     fn tool_status_subagent_tool_keeps_count_suffix() {
         let stats = ToolStats {
             calls: 1,
@@ -4405,8 +4954,8 @@ mod tests {
             ..ToolStats::default()
         };
         assert_eq!(
-            tool_status_text("linux_input_method_diagnose", &stats, true),
-            format!("linux_input_method_diagnose×1 {}", t("running", "运行中"))
+            tool_status_text("deep_research", &stats, true),
+            format!("deep_research×1 {}", t("running", "运行中"))
         );
         let stats = ToolStats {
             calls: 1,
@@ -4520,7 +5069,7 @@ mod tests {
             10,
         );
         renderer.tool_stats.insert(
-            "deep_research_linux_game_compatibility".to_string(),
+            "deep_research".to_string(),
             ToolStats {
                 calls: 1,
                 ok: 1,
@@ -4535,8 +5084,8 @@ mod tests {
         assert_eq!(
             renderer.tool_summary_text(),
             format!(
-                "~ {}×1 ok\n✓ 工具调用 1 次　消耗词元 2.3K",
-                t("Linux game compatibility research", "Linux 游戏兼容性调查")
+                "~ {}×1 ok\n  ✓ 工具调用 1 次　消耗词元 2.3K",
+                t("Deep research", "深度研究")
             )
         );
     }
@@ -4567,18 +5116,141 @@ mod tests {
         assert_eq!(renderer.tool_summary_header(), header);
         assert_eq!(
             renderer.tool_summary_text(),
-            format!("{header}\n↳ 定位活动摘要渲染链路")
+            format!("{header}\n  ↳ 定位活动摘要渲染链路")
         );
     }
 
     #[test]
-    fn all_subagent_summaries_use_activity_prefix() {
-        for name in [
-            "task",
-            "deep_research",
-            "deep_research_linux_game_compatibility",
-            "linux_input_method_diagnose",
+    fn parallel_subagents_render_stacked_blocks() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            true,
+            true,
+            10,
+        );
+        for (name, subject, progress) in [
+            ("task:任务A", "任务A", Some("工具 #1: 运行命令")),
+            ("task:任务B", "任务B", None),
+            ("task:任务C", "任务C", Some("正在搜索")),
         ] {
+            renderer.tool_stats.insert(
+                name.to_string(),
+                ToolStats {
+                    calls: 1,
+                    ok: 0,
+                    error: 0,
+                    subject: Some(subject.to_string()),
+                    progress: progress.map(str::to_string),
+                    final_progress: None,
+                    ..ToolStats::default()
+                },
+            );
+        }
+        let (phase, sub) = renderer.tool_summary_live();
+        // Block mode: no shared phase line — every subagent is its own block.
+        assert_eq!(phase, "");
+        let sub = sub.expect("stacked blocks present");
+        let marker = wait_spinner::BLOCK_MARKER;
+        let lines: Vec<&str> = sub.lines().collect();
+        // Each running block header carries the spinner marker; its own
+        // progress follows; blank lines separate blocks. The redundant
+        // subject line (same as the description in the header) is dropped.
+        assert!(lines[0].starts_with(marker) && lines[0].contains("任务A"));
+        assert_eq!(lines[1], "  ↳ 工具 #1: 运行命令");
+        assert_eq!(lines[2], "");
+        assert!(lines[3].starts_with(marker) && lines[3].contains("任务B"));
+        assert_eq!(lines[4], "");
+        assert!(lines[5].starts_with(marker) && lines[5].contains("任务C"));
+        assert_eq!(lines[6], "  ↳ 正在搜索");
+        assert_eq!(lines.len(), 7);
+    }
+
+    #[test]
+    fn live_blocks_freeze_settled_subagents_in_place() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            true,
+            true,
+            10,
+        );
+        renderer.tool_stats.insert(
+            "task:任务A".to_string(),
+            ToolStats {
+                calls: 1,
+                subject: Some("任务A".to_string()),
+                progress: Some("正在搜索".to_string()),
+                ..ToolStats::default()
+            },
+        );
+        renderer.tool_stats.insert(
+            "task:任务B".to_string(),
+            ToolStats {
+                calls: 1,
+                ok: 1,
+                subject: Some("任务B".to_string()),
+                final_progress: Some("工具调用 1 次".to_string()),
+                ..ToolStats::default()
+            },
+        );
+        let (phase, sub) = renderer.tool_summary_live();
+        assert_eq!(phase, "");
+        let sub = sub.expect("blocks present");
+        let marker = wait_spinner::BLOCK_MARKER;
+        let lines: Vec<&str> = sub.lines().collect();
+        // Running block keeps its animated marker + indented live progress…
+        assert!(lines[0].starts_with(marker) && lines[0].contains("任务A"));
+        assert_eq!(lines[1], "  ↳ 正在搜索");
+        assert_eq!(lines[2], "");
+        // …while the settled block drops the spinner glyph from its header;
+        // detail lines stay two columns in, matching the committed layout.
+        assert!(lines[3].starts_with("~ ") && lines[3].contains("任务B"));
+        assert!(lines[3].contains("ok"));
+        assert_eq!(lines[4], "  ✓ 工具调用 1 次");
+        assert_eq!(lines.len(), 5);
+    }
+
+    #[test]
+    fn committed_summary_keeps_block_headers_when_one_subagent_finishes() {
+        let mut renderer = StreamRenderer::new(
+            ReasoningDisplayMode::Summary,
+            ToolCallDisplayMode::Summary,
+            true,
+            true,
+            10,
+        );
+        renderer.tool_stats.insert(
+            "task:任务A".to_string(),
+            ToolStats {
+                calls: 1,
+                subject: Some("任务A".to_string()),
+                ..ToolStats::default()
+            },
+        );
+        renderer.tool_stats.insert(
+            "task:任务B".to_string(),
+            ToolStats {
+                calls: 1,
+                ok: 1,
+                subject: Some("任务B".to_string()),
+                final_progress: Some("工具调用 1 次".to_string()),
+                ..ToolStats::default()
+            },
+        );
+        let text = renderer.tool_summary_text();
+        let lines: Vec<&str> = text.lines().collect();
+        // Each block keeps its own "~" header; a blank line separates blocks.
+        assert!(lines[0].starts_with("~ ") && lines[0].contains("任务A"));
+        assert_eq!(lines[1], "");
+        assert!(lines[2].starts_with("~ ") && lines[2].contains("任务B"));
+        assert_eq!(lines[3], "  ✓ 工具调用 1 次");
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn all_subagent_summaries_use_activity_prefix() {
+        for name in ["task", "deep_research"] {
             let mut renderer = StreamRenderer::new(
                 ReasoningDisplayMode::Summary,
                 ToolCallDisplayMode::Summary,
@@ -4624,14 +5296,14 @@ mod tests {
             ToolStats {
                 calls: 1,
                 ok: 1,
-                subject: Some("网页搜索、天气查询".to_string()),
+                subject: Some("网络搜索、天气查询".to_string()),
                 ..ToolStats::default()
             },
         );
 
         assert_eq!(
             renderer.tool_summary_text(),
-            format!("~ {}×1 ok · 网页搜索、天气查询", t("Load", "加载"))
+            format!("~ {}×1 ok · 网络搜索、天气查询", t("Load", "加载"))
         );
         assert!(!renderer.tool_summary_text().contains("\n↳"));
     }
@@ -4677,7 +5349,7 @@ mod tests {
         );
         let expected_load_tools_subject = format!(
             "{}{}{}",
-            t("Web search", "网页搜索"),
+            t("Web search", "网络搜索"),
             t(", ", "、"),
             t("Weather", "天气查询")
         );
@@ -4688,6 +5360,27 @@ mod tests {
             )
             .as_deref(),
             Some(expected_load_tools_subject.as_str())
+        );
+    }
+
+    #[test]
+    fn read_file_subject_shows_the_page_range() {
+        assert_eq!(
+            tool_subject("read_file", r#"{"path":"/tmp/a.rs"}"#).as_deref(),
+            Some("/tmp/a.rs")
+        );
+        assert_eq!(
+            tool_subject("read_file", r#"{"path":"/tmp/a.rs","offset":2001,"limit":2000}"#)
+                .as_deref(),
+            Some("/tmp/a.rs (L2001-4000)")
+        );
+        assert_eq!(
+            tool_subject("read_file", r#"{"path":"/tmp/a.rs","limit":500}"#).as_deref(),
+            Some("/tmp/a.rs (L1-500)")
+        );
+        assert_eq!(
+            tool_subject("read_file", r#"{"path":"/tmp/a.rs","offset":300}"#).as_deref(),
+            Some("/tmp/a.rs (L300+)")
         );
     }
 
@@ -4769,11 +5462,6 @@ mod tests {
             ("deep_research", "Deep research", "深度研究"),
             ("read_file", "Read file", "读取文件"),
             ("check_issue", "Check issue", "检查问题"),
-            (
-                "linux_input_method_diagnose",
-                "Input method diagnosis",
-                "输入法诊断",
-            ),
             ("check_os_info", "System information", "查看系统信息"),
             ("get_weather", "Weather", "天气查询"),
             ("get_exchange_rate", "Exchange rates", "汇率查询"),
@@ -4923,7 +5611,10 @@ mod tests {
         renderer.record_reasoning_text("one\nt");
         renderer.record_reasoning_text("wo\nthree");
         renderer.reasoning_title = Some("分析摘要协议".to_string());
-        let expected = crate::token_estimate::estimate_tokens("one\ntwo\nthree");
+        // 词元数按 chunk 增量累加(避免每 chunk 对全文 O(n²) 重算),
+        // 期望值即各 chunk 估算之和;跨 chunk 切词处与全文重算略有出入。
+        let expected = crate::token_estimate::estimate_tokens("one\nt")
+            + crate::token_estimate::estimate_tokens("wo\nthree");
         let summary = renderer.reasoning_summary_text();
         let title_separator = t(": ", "：");
         assert!(summary.starts_with(&format!(
@@ -5130,6 +5821,42 @@ mod tests {
         assert!(phase.ends_with("1.2s"));
         renderer.prepare_for_external_output().unwrap();
         assert!(renderer.preparing_question_started_at.is_none());
+    }
+
+    #[test]
+    fn tool_preparing_announces_every_slow_argument_tool() {
+        let phase_for = |name: &str| {
+            let mut renderer = StreamRenderer::new(
+                ReasoningDisplayMode::Summary,
+                ToolCallDisplayMode::Summary,
+                false,
+                true,
+                10,
+            );
+            renderer.use_external_cursor_control();
+            renderer.use_buffered_output();
+            // No TTY under test, so the spinner degrades to a summary line —
+            // which is gated on the same flag a real terminal would set.
+            renderer.live_summary = true;
+            renderer.write_tool_preparing(name).unwrap();
+            String::from_utf8_lossy(&renderer.take_output_frame()).into_owned()
+        };
+
+        // apply_artifact_patch used to fall through the label match and render
+        // nothing even though the backend announced it.
+        for name in ["apply_patch", "apply_artifact_patch", "write_file"] {
+            let phase = phase_for(name);
+            assert!(
+                phase.contains(t("~ Preparing edit", "~ 准备编辑")),
+                "{name}"
+            );
+            // Dim tool palette, not the green the model's thinking uses: a
+            // tool is starting up here.
+            assert!(phase.contains("\x1b[2m"), "{name}");
+            assert!(!phase.contains("\x1b[38;5;10m"), "{name}");
+        }
+        assert!(phase_for("run_command").contains(t("~ Preparing command", "~ 准备执行")));
+        assert!(phase_for("read_file").is_empty());
     }
 
     #[test]

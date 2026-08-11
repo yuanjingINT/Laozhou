@@ -1,27 +1,35 @@
+#![allow(dead_code)]
+
 mod agent;
 mod alarm;
 mod cli;
 mod clipboard;
 mod config;
 mod config_tui;
+mod daemon;
 mod default_kb;
 mod default_models;
 mod dream;
 mod i18n;
+mod ipc;
 mod llm;
 mod logging;
 mod memory;
 mod models_cache;
+mod notify;
 mod paths;
+mod platforms;
 mod prompts;
 mod question;
 mod question_tui;
 mod render;
 mod shell;
+mod skills;
 mod state;
 mod token_counter;
 mod token_estimate;
 mod tools;
+mod transfer;
 mod voice;
 mod web;
 
@@ -36,6 +44,9 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
+    if platforms::plugins::renderer_worker_requested() {
+        return platforms::plugins::run_renderer_worker().await;
+    }
     let paths = paths::LaozhouPaths::new()?;
     let language = config::AppConfig::display_language_hint(&paths);
     i18n::init(language.as_deref().unwrap_or("auto"));

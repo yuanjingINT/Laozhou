@@ -4,7 +4,7 @@ use anyhow::Result;
 
 /// Listen for the configured wake word(s) indefinitely until one is detected.
 /// The configured wake word may be a single phrase or a comma-separated list
-/// (e.g. "miyu,米哟") so a persona can respond to several wake phrases.
+/// (e.g. "laozhou,米哟") so a persona can respond to several wake phrases.
 /// Uses continuous VAD-triggered recording: the microphone is always listened
 /// to, and each complete utterance is transcribed and checked for the wake
 /// word, so nothing is missed between fixed windows.
@@ -134,13 +134,13 @@ mod tests {
 
     #[test]
     fn supports_multiple_wake_words() {
-        assert!(text_matches_wake("Miyu，帮我看看", "miyu"));
+        assert!(text_matches_wake("Laozhou，帮我看看", "laozhou"));
         assert!(text_matches_wake("米哟，在吗", "米哟"));
         assert!(text_matches_wake("米u，在吗", "米u"));
         assert!(!text_matches_wake("周，在吗", "米哟"));
         assert_eq!(
-            wake_words("miyu, 米哟 , 老周,米u"),
-            vec!["miyu", "米哟", "老周", "米u"]
+            wake_words("laozhou, 米哟 , 老周,米u"),
+            vec!["laozhou", "米哟", "老周", "米u"]
         );
     }
 }
