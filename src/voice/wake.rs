@@ -54,14 +54,14 @@ pub fn listen_for_wake_word(config: &VoicePluginConfig) -> Result<()> {
                 continue;
             }
         };
-        eprintln!(
-            "{}",
-            crate::i18n::text_owned(
-                format!("heard: \"{text}\""),
-                format!("听到: \"{text}\""),
-            )
-        );
         if wake_words.iter().any(|word| text_matches_wake(&text, word)) {
+            eprintln!(
+                "{}",
+                crate::i18n::text_owned(
+                    format!("heard: \"{text}\""),
+                    format!("听到: \"{text}\""),
+                )
+            );
             return Ok(());
         }
     }
