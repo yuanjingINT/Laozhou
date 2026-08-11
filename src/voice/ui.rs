@@ -221,21 +221,48 @@ fn build_frame(
                     OrbState::Listening => 0.35,
                     OrbState::Recording => 0.6,
                     OrbState::Thinking => 0.25,
-                    OrbState::Speaking => 0.8 + 0.2 * (phase * std::f64::consts::TAU * 8.0).sin(),
+                    // Speaking: strong pulsing wave driven by the "voice".
+                    OrbState::Speaking => 0.9 + 0.1 * (phase * std::f64::consts::TAU * 10.0).sin(),
                 };
                 let idx = ((0.5 + 0.5 * (wave * amp)).clamp(0.0, 0.999) * 5.0) as usize;
                 row[c] = WAVE[idx];
             } else if dist < radius {
-                // Inner fill.
+                // Inner fill: for Speaking, the whole disc ripples like water
+                // driven by a fast oscillating source at the center.
                 let idx = match state {
                     OrbState::Thinking => 0,
                     _ => {
-                        let brightness =
-                            (1.0 - (dist / radius)) * (0.5 + 0.5 * (phase * std::f64::consts::TAU).sin());
+                        let center_wave =
+                            (phase * std::f64::consts::TAU * 8.0 - dist * 0.8).sin();
+                        let falloff = 1.0 - (dist / radius);
+                        let mut brightness = falloff * (0.55 + 0.45 * center_wave);
+                        if state == OrbState::Speaking {
+                            brightness = (0.5 + 0.5 * center_wave) * falloff * 4.0;
+                        }
                         ((brightness.clamp(0.0, 0.999) * 2.0) as usize).min(2)
                     }
                 };
                 row[c] = WAVE[idx];
+            }
+        }
+    }
+
+    // Speaking: outward sound ripples expanding from the center, like the
+    // recording ripple but tied to the fast "voice" oscillation.
+    if state == OrbState::Speaking {
+        for i in 0..3 {
+            let progress = (phase * 2.0 + i as f64 / 3.0).fract();
+            let ripple_r = radius * 0.3 + progress * (radius + 3.0);
+            for (r, row) in grid.iter_mut().enumerate() {
+                let cy_d = r as f64 + 0.5;
+                for c in 0..cols {
+                    let cx_d = c as f64 + 0.5;
+                    let d = ((cx_d - center_col).powi(2) + (cy_d - center_row).powi(2)).sqrt();
+                    if (d - ripple_r).abs() < 0.45 && d > radius * 0.2 {
+                        let idx = ((1.0 - progress) * 4.0) as usize + 1;
+                        row[c] = WAVE[idx.min(5)];
+                    }
+                }
             }
         }
     }
@@ -309,5 +336,7 @@ mod tests {
         assert!(wave_chars > 10, "Recording should draw expanding ripples");
     }
 }
+
+
 
 
