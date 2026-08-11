@@ -6851,7 +6851,7 @@ async fn run_voice_ui(
                 let _ = wake_tx.send(());
             });
             loop {
-                phase = (phase + 0.02).fract();
+                phase = (phase + 0.06).fract();
                 ui.render(
                     OrbState::Listening,
                     phase,
@@ -6868,7 +6868,7 @@ async fn run_voice_ui(
                     }
                     None => {}
                 }
-                if wake_rx.recv_timeout(std::time::Duration::from_millis(60)).is_ok() {
+                if wake_rx.recv_timeout(std::time::Duration::from_millis(30)).is_ok() {
                     started = true;
                     break;
                 }
@@ -6896,7 +6896,7 @@ async fn run_voice_ui(
         });
         let mut rec_phase = 0f64;
         let wav = loop {
-            rec_phase = (rec_phase + 0.03).fract();
+            rec_phase = (rec_phase + 0.08).fract();
             ui.render(OrbState::Recording, rec_phase, &t("recording...", "正在录音..."))?;
             // Let recording progress in the background; check for completion.
             if let Ok(result) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
@@ -6919,7 +6919,7 @@ async fn run_voice_ui(
         });
         let mut stt_phase = 0f64;
         let transcript = loop {
-            stt_phase = (stt_phase + 0.04).fract();
+            stt_phase = (stt_phase + 0.08).fract();
             ui.render(OrbState::Thinking, stt_phase, &t("recognizing...", "正在识别..."))?;
             if let Ok(ready) = tokio::time::timeout(
                 TokioDuration::from_millis(50),
@@ -7013,7 +7013,7 @@ async fn run_voice_ui(
                         break outcome;
                     }
                     _ = anim.tick() => {
-                        think_phase = (think_phase + 0.05).fract();
+                        think_phase = (think_phase + 0.08).fract();
                         ui.render(OrbState::Thinking, think_phase, &t("thinking...", "思考中..."))?;
                     if let Ok(frame) = frame_rx.try_recv() {
                         ui.render_content(&frame)?;
@@ -7076,9 +7076,9 @@ fn speak_voice_blocking(
     // 立即切到说话动画，并在整个合成+播放期间持续刷新；tick 只是结束信号。
     let mut phase = 0f64;
     loop {
-        phase = (phase + 0.04).fract();
+        phase = (phase + 0.08).fract();
         let _ = ui.render(OrbState::Speaking, phase, &t("speaking...", "正在说话..."));
-        if tick_rx.recv_timeout(std::time::Duration::from_millis(50)).is_err() {
+        if tick_rx.recv_timeout(std::time::Duration::from_millis(20)).is_err() {
             break;
         }
     }
