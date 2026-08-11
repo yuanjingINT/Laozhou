@@ -7073,10 +7073,14 @@ fn speak_voice_blocking(
         };
         let _ = crate::voice::tts::speak_with_tick(&cfg, &text, &mut on_tick);
     });
+    // 立即切到说话动画，并在整个合成+播放期间持续刷新；tick 只是结束信号。
     let mut phase = 0f64;
-    while tick_rx.recv_timeout(std::time::Duration::from_millis(50)).is_ok() {
+    loop {
         phase = (phase + 0.04).fract();
         let _ = ui.render(OrbState::Speaking, phase, &t("speaking...", "正在说话..."));
+        if tick_rx.recv_timeout(std::time::Duration::from_millis(50)).is_err() {
+            break;
+        }
     }
     let _ = handle.join();
 }
