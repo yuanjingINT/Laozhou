@@ -31,7 +31,7 @@ fn whisper_cli(config: &VoicePluginConfig, wav_path: &Path) -> Result<String> {
     } else {
         config.stt_command.trim()
     };
-    let model = config.stt_model.trim();
+    let model = expand_tilde(config.stt_model.trim());
     if model.is_empty() {
         bail!(
             "{}",
@@ -49,10 +49,19 @@ fn whisper_cli(config: &VoicePluginConfig, wav_path: &Path) -> Result<String> {
         .arg(wav_path)
         .arg("-nt")
         .arg("-np")
+        .arg("-otxt")
         .arg("-of")
         .arg(transcript_base_path(wav_path));
     if !language.is_empty() && language != "auto" {
         command.arg("-l").arg(language);
+    }
+    // 简体中文引导：whisper 中文模型默认输出繁体，用初始 prompt 强制简体，
+    // 配合 carry-initial-prompt 只作为上下文引导而不拼入转写结果。
+    if language.eq_ignore_ascii_case("zh") || language.eq_ignore_ascii_case("cmn") {
+        command
+            .arg("--prompt")
+            .arg("简体中文")
+            .arg("--carry-initial-prompt");
     }
     let output = command
         .output()
@@ -122,6 +131,16 @@ fn clean_transcript(raw: &str) -> String {
         .join(" ")
         .trim()
         .to_string()
+}
+
+/// Expand a leading `~` in a path to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+            return home.join(rest).display().to_string();
+        }
+    }
+    path.to_string()
 }
 
 fn shell_words(input: &str) -> Vec<String> {

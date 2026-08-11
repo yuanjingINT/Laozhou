@@ -6846,8 +6846,10 @@ async fn run_voice_ui(
             // animates the orb and also accepts a space key as a manual wake.
             let wake_cfg = voice_config.clone();
             let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+            let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop_flag_thread = stop_flag.clone();
             std::thread::spawn(move || {
-                let _ = crate::voice::wake::listen_for_wake_word(&wake_cfg);
+                let _ = crate::voice::wake::listen_for_wake_word(&wake_cfg, Some(&stop_flag_thread));
                 let _ = wake_tx.send(());
             });
             loop {
@@ -6859,11 +6861,14 @@ async fn run_voice_ui(
                 )?;
                 match ui.poll_space()? {
                     Some(true) => {
-                        // Space pressed: force-wake.
+                        // Space pressed: force-wake. Stop the background
+                        // wake listener so it does not keep holding the mic.
+                        stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                         break;
                     }
                     Some(false) => {
                         // Esc / q: quit voice mode.
+                        stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                         return Ok(());
                     }
                     None => {}

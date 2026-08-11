@@ -1,15 +1,20 @@
 use crate::config::VoicePluginConfig;
 use crate::voice::record;
 use anyhow::Result;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-/// Listen for the configured wake word(s) indefinitely until one is detected.
-/// The configured wake word may be a single phrase or a comma-separated list
-/// (e.g. "laozhou,米哟") so a persona can respond to several wake phrases.
+/// Listen for the configured wake word(s) until one is detected or `stop` is
+/// set. The configured wake word may be a single phrase or a comma-separated
+/// list (e.g. "laozhou,米哟") so a persona can respond to several wake phrases.
 /// Uses continuous VAD-triggered recording: the microphone is always listened
 /// to, and each complete utterance is transcribed and checked for the wake
 /// word, so nothing is missed between fixed windows.
 /// Ctrl+C (SIGINT) cancels from the caller side.
-pub fn listen_for_wake_word(config: &VoicePluginConfig) -> Result<()> {
+pub fn listen_for_wake_word(
+    config: &VoicePluginConfig,
+    stop: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
     if !config.wake_enabled {
         return Ok(());
     }
@@ -28,6 +33,9 @@ pub fn listen_for_wake_word(config: &VoicePluginConfig) -> Result<()> {
     );
 
     loop {
+        if stop.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Ok(());
+        }
         let wav = match record::listen_for_speech(config) {
             Ok(wav) => wav,
             Err(err) => {
