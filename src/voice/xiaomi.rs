@@ -75,13 +75,14 @@ pub fn transcribe(config: &VoicePluginConfig, wav_path: &Path) -> Result<String>
     let client = client(config)?;
     let audio = std::fs::read(wav_path)?;
     let data = base64::engine::general_purpose::STANDARD.encode(&audio);
+    let format = detect_audio_format(&audio).unwrap_or("wav");
     let payload = json!({
         "model": model,
         "messages": [{
             "role": "user",
             "content": [{
                 "type": "input_audio",
-                "input_audio": { "data": data, "format": "wav" }
+                "input_audio": { "data": data, "format": format }
             }]
         }],
         "max_tokens": 512
@@ -121,6 +122,35 @@ pub fn transcribe(config: &VoicePluginConfig, wav_path: &Path) -> Result<String>
         );
     }
     Ok(text)
+}
+
+/// Detect the audio container format from magic bytes for the Xiaomi ASR API.
+/// Returns `wav`, `ogg`, `mp3`, `flac`, or `m4a` based on file signatures.
+pub fn detect_audio_format(audio: &[u8]) -> Option<&'static str> {
+    if audio.len() >= 4 {
+        if &audio[..4] == b"RIFF" && audio.len() >= 12 && &audio[8..12] == b"WAVE" {
+            return Some("wav");
+        }
+        if audio.len() >= 4 && &audio[..4] == b"OggS" {
+            return Some("ogg");
+        }
+        if audio.len() >= 3 && &audio[..3] == b"ID3" {
+            return Some("mp3");
+        }
+        if audio.len() >= 2 && audio[0] == 0xFF && (audio[1] & 0xE0) == 0xE0 {
+            return Some("mp3");
+        }
+        if audio.len() >= 4 && &audio[..4] == b"fLaC" {
+            return Some("flac");
+        }
+        if audio.len() >= 8 {
+            let m4a = b"ftyp";
+            if &audio[4..8] == m4a {
+                return Some("m4a");
+            }
+        }
+    }
+    None
 }
 
 /// Synthesize speech using the Xiaomi TTS model (`/chat/completions` with audio modality).

@@ -62,6 +62,8 @@ use crate::platforms::{self, PlatformRuntime};
 const JSON_BODY_LIMIT: usize = 4 * 1024 * 1024;
 const PERSONA_ASSET_LIMIT: usize = 8 * 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT: usize = 10 * 1024 * 1024;
+const VOICE_AUDIO_BODY_LIMIT: usize = 10 * 1024 * 1024;
+const MAX_VOICE_TEXT_BYTES: usize = 4096;
 const MAX_ATTACHMENT_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TEXT_ATTACHMENT_BYTES: usize = 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE: usize = 12;
@@ -3566,6 +3568,11 @@ fn router(state: DaemonState) -> Router {
             get(get_thinking_variants).put(set_thinking_variants),
         )
         .route("/api/conversation/reset", post(reset_conversation))
+        .route(
+            "/api/voice/stt",
+            post(voice_stt).layer(DefaultBodyLimit::max(VOICE_AUDIO_BODY_LIMIT)),
+        )
+        .route("/api/voice/tts", post(voice_tts))
         .route("/api/jobs", get(list_jobs_http))
         .route("/api/jobs/{job_id}", delete(stop_job_http))
         // OneBot v11 reverse-WS endpoint: NapCat connects here as a WS
@@ -5608,6 +5615,131 @@ async fn reset_conversation(
             ))
         }
     }
+}
+
+/// POST /api/voice/stt — speech-to-text via the configured Xiaomi ASR backend.
+///
+/// Body: raw WAV bytes (16-bit PCM, mono). Returns `{"text": "..."}`.
+async fn voice_stt(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> std::result::Result<Json<Value>, ApiError> {
+    require_auth(&headers, &state)?;
+    if body.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "audio is empty"));
+    }
+    if body.len() > VOICE_AUDIO_BODY_LIMIT {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "audio is too large",
+        ));
+    }
+    let config = state.manager.lock().unwrap().config.clone();
+    let audio = body.to_vec();
+    let text: std::result::Result<String, anyhow::Error> =
+        tokio::task::spawn_blocking(move || {
+            let tmp = std::env::temp_dir().join(format!(
+                "laozhou_web_stt_{}.wav",
+                std::process::id()
+            ));
+            std::fs::write(&tmp, &audio)?;
+            // Browsers may record WebM/Opus (Chrome) or Ogg/Opus (Firefox).
+            // The Xiaomi ASR API only accepts mp3/flac/m4a/wav/ogg, so convert
+            // unrecognised containers (e.g. WebM) to WAV with ffmpeg.
+            let is_wav = crate::voice::xiaomi::detect_audio_format(&audio) == Some("wav");
+            let input = if is_wav {
+                tmp.clone()
+            } else {
+                let converted = std::env::temp_dir().join(format!(
+                    "laozhou_web_stt_{}.conv.wav",
+                    std::process::id()
+                ));
+                let status = std::process::Command::new("ffmpeg")
+                    .args(["-y", "-i"])
+                    .arg(&tmp)
+                    .args(["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
+                    .arg(&converted)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                match status {
+                    Ok(status) if status.success() => converted,
+                    _ => tmp.clone(),
+                }
+            };
+            let result = crate::voice::xiaomi::transcribe(&config.plugins.voice, &input);
+            let _ = std::fs::remove_file(&tmp);
+            if input != tmp {
+                let _ = std::fs::remove_file(&input);
+            }
+            result
+        })
+        .await
+        .map_err(ApiError::internal)?;
+    let text = text.map_err(|err| {
+        tracing::error!(error = %err, "{}", t("WebUI STT failed", "WebUI 语音识别失败"));
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            safe_error_message(&err.to_string()),
+        )
+    })?;
+    Ok(Json(json!({ "text": text })))
+}
+
+/// POST /api/voice/tts — text-to-speech via the configured Xiaomi TTS backend.
+///
+/// Body: `{"text": "..."}`. Returns audio bytes (`audio/*`).
+async fn voice_tts(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(request): Json<Value>,
+) -> std::result::Result<Response, ApiError> {
+    require_auth(&headers, &state)?;
+    let text = request
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "text is empty"));
+    }
+    if text.len() > MAX_VOICE_TEXT_BYTES {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "text is too long",
+        ));
+    }
+    let config = state.manager.lock().unwrap().config.clone();
+    let audio: std::result::Result<Vec<u8>, anyhow::Error> =
+        tokio::task::spawn_blocking(move || {
+            let tmp = std::env::temp_dir().join(format!(
+                "laozhou_web_tts_{}.mp3",
+                std::process::id()
+            ));
+            crate::voice::xiaomi::synthesize(&config.plugins.voice, &text, &tmp)?;
+            let bytes = std::fs::read(&tmp)?;
+            let _ = std::fs::remove_file(&tmp);
+            Ok(bytes)
+        })
+        .await
+        .map_err(ApiError::internal)?;
+    let audio = audio.map_err(|err| {
+        tracing::error!(error = %err, "{}", t("WebUI TTS failed", "WebUI 语音合成失败"));
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            safe_error_message(&err.to_string()),
+        )
+    })?;
+    let mut response = Response::new(audio.into());
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("audio/mpeg"));
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 #[allow(clippy::too_many_arguments)]

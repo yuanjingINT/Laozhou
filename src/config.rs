@@ -5374,10 +5374,17 @@ impl AppConfig {
     ///
     /// - Laozhou (or no persona): wake word "老周" (+ "你好"), male TTS voice.
     /// - Miyu (未有): wake words "miyu"/"米哟"/"米u" (+ "你好"), female voice.
+    /// - Dito (蒂特): wake words "蒂特"/"dito" (+ "你好"), female voice.
     pub fn persona_voice_defaults(&self) -> (String, String) {
         let persona = self.prompt.active_persona.to_lowercase();
         let is_miyu = persona.contains("miyu") || persona.contains("未有");
-        if is_miyu {
+        let is_dito = persona.contains("dito") || persona.contains("蒂特");
+        if is_dito {
+            (
+                "蒂特,dito,你好".to_string(),
+                crate::default_models::XIAOMI_TTS_VOICE_MIYU.to_string(),
+            )
+        } else if is_miyu {
             (
                 "miyu,米哟,米u,你好".to_string(),
                 crate::default_models::XIAOMI_TTS_VOICE_MIYU.to_string(),

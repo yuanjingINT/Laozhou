@@ -49,6 +49,7 @@ fn whisper_cli(config: &VoicePluginConfig, wav_path: &Path) -> Result<String> {
         .arg(wav_path)
         .arg("-nt")
         .arg("-np")
+        .arg("-ng")
         .arg("-otxt")
         .arg("-of")
         .arg(transcript_base_path(wav_path));

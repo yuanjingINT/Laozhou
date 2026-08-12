@@ -40,7 +40,9 @@
     "sun-moon": [["path", { d: "M12 8a2.83 2.83 0 0 0 4 4 4 4 0 1 1-4-4" }], ["path", { d: "M12 2v2" }], ["path", { d: "M12 20v2" }], ["path", { d: "m4.9 4.9 1.4 1.4" }], ["path", { d: "m17.7 17.7 1.4 1.4" }], ["path", { d: "M2 12h2" }], ["path", { d: "M20 12h2" }], ["path", { d: "m6.3 17.7-1.4 1.4" }], ["path", { d: "m19.1 4.9-1.4 1.4" }]],
     "triangle-alert": [["path", { d: "m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" }], ["path", { d: "M12 9v4" }], ["path", { d: "M12 17h.01" }]],
     wrench: [["path", { d: "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94z" }]],
-    x: [["path", { d: "M18 6 6 18" }], ["path", { d: "m6 6 12 12" }]]
+    x: [["path", { d: "M18 6 6 18" }], ["path", { d: "m6 6 12 12" }]],
+    mic: [["path", { d: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" }], ["path", { d: "M19 10v2a7 7 0 0 1-14 0v-2" }], ["line", { x1: "12", x2: "12", y1: "19", y2: "22" }]],
+    speaker: [["polygon", { points: "11 5 6 9 2 9 2 15 6 15 11 19 11 5" }], ["path", { d: "M15.54 8.46a5 5 0 0 1 0 7.07" }], ["path", { d: "M19.07 4.93a10 10 0 0 1 0 14.14" }]]
   };
 
   const EVENT_NAMES = [
@@ -125,7 +127,8 @@
     composerDock: document.getElementById("composerDock"),
     questionDock: document.getElementById("questionDock"),
     composerForm: document.getElementById("composerForm"),
-    composerInput: document.getElementById("composerInput"),
+     composerInput: document.getElementById("composerInput"),
+     micButton: document.getElementById("micButton"),
     queueTray: document.getElementById("queueTray"),
     composerState: document.getElementById("composerState"),
     characterCount: document.getElementById("characterCount"),
@@ -1704,6 +1707,10 @@
     elements.sendButton.title = running ? "加入队列" : "发送消息";
     elements.sendButton.setAttribute("aria-label", elements.sendButton.title);
     elements.sendButton.disabled = state.blocked || state.adminBusy || state.submitting || hasPendingQuestion() || (running && !queueAvailable) || inputCount === 0 || inputCount > MAX_CONTENT_CHARS;
+    if (elements.micButton && micSupported()) {
+      const recording = elements.micButton.dataset.recording === "true";
+      elements.micButton.disabled = !recording && (state.blocked || state.adminBusy || state.submitting || hasPendingQuestion() || (running && !queueAvailable));
+    }
     elements.stopButton.hidden = !cancellable;
     elements.stopButton.disabled = !cancellable || state.cancellationRequested || state.adminBusy;
     elements.stopButton.title = state.cancellationRequested ? "正在停止" : "停止回复";
@@ -1790,6 +1797,133 @@
     button.appendChild(makeIconSlot("copy"));
     button.addEventListener("click", () => copyText(typeof textProvider === "function" ? textProvider() : textProvider));
     return button;
+  }
+
+  // ---- Web UI voice support: microphone input + spoken replies ----
+  let audioPlayer = null;
+  function stopAudioPlayback() {
+    if (audioPlayer) {
+      audioPlayer.pause();
+      audioPlayer.currentTime = 0;
+    }
+  }
+
+  async function speakText(text) {
+    const content = String(text || "").trim();
+    if (!content) return;
+    stopAudioPlayback();
+    const response = await fetch("/api/voice/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: content }),
+    });
+    if (!response.ok) {
+      let message = "语音合成失败";
+      try { message = (await response.json()).error || message; } catch (_) {}
+      showToast(message, true);
+      return;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    audioPlayer = new Audio(url);
+    audioPlayer.onended = () => URL.revokeObjectURL(url);
+    audioPlayer.play().catch(() => URL.revokeObjectURL(url));
+  }
+
+  function makeSpeakButton(textProvider) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "speak-button";
+    button.title = "朗读回复";
+    button.setAttribute("aria-label", "朗读回复");
+    button.appendChild(makeIconSlot("speaker"));
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      speakText(typeof textProvider === "function" ? textProvider() : textProvider);
+    });
+    return button;
+  }
+
+  let mediaRecorder = null;
+  let mediaChunks = [];
+  let micStream = null;
+
+  function micSupported() {
+    return typeof navigator !== "undefined" && !!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia && typeof window.MediaRecorder !== "undefined";
+  }
+
+  function stopMicRecording() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+    }
+  }
+
+  async function startMicRecording(button) {
+    stopAudioPlayback();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micStream = stream;
+    mediaChunks = [];
+    const mimeTypes = ["audio/ogg; codecs=opus", "audio/ogg", "audio/webm; codecs=opus", "audio/webm"];
+    let mimeType = "";
+    for (const candidate of mimeTypes) {
+      if (window.MediaRecorder.isTypeSupported(candidate)) {
+        mimeType = candidate;
+        break;
+      }
+    }
+    mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) mediaChunks.push(event.data);
+    };
+    mediaRecorder.onstop = async () => {
+      if (micStream) {
+        micStream.getTracks().forEach((track) => track.stop());
+        micStream = null;
+      }
+      const blob = new Blob(mediaChunks, { type: "audio/webm" });
+      mediaChunks = [];
+      await sendAudioForStt(blob);
+    };
+    mediaRecorder.start();
+    button.classList.add("is-recording");
+    button.dataset.recording = "true";
+    button.title = "停止录音";
+  }
+
+  async function sendAudioForStt(blob) {
+    const bytes = await blob.arrayBuffer();
+    const response = await fetch("/api/voice/stt", {
+      method: "POST",
+      body: bytes,
+    });
+    let text = "";
+    if (response.ok) {
+      try { text = (await response.json()).text || ""; } catch (_) {}
+    } else {
+      let message = "语音识别失败";
+      try { message = (await response.json()).error || message; } catch (_) {}
+      showToast(message, true);
+    }
+    const input = elements.composerInput;
+    if (text && input) {
+      input.value = (input.value ? input.value + " " : "") + text;
+      input.dispatchEvent(new Event("input"));
+      input.focus();
+    }
+  }
+
+  function toggleMicRecording() {
+    const button = elements.micButton;
+    if (button.dataset.recording === "true") {
+      stopMicRecording();
+      button.classList.remove("is-recording");
+      delete button.dataset.recording;
+      button.title = "语音输入";
+      return;
+    }
+    startMicRecording(button).catch((err) => {
+      showToast("无法访问麦克风: " + err.message, true);
+    });
   }
 
   function validHttpUrl(value) {
@@ -2439,6 +2573,10 @@
       const spacer = document.createElement("span");
       spacer.className = "meta-spacer";
       meta.append(spacer, makeCopyButton(copyValue, "复制回复"));
+    }
+    const spokenValue = String(content || "").trim();
+    if (spokenValue) {
+      meta.appendChild(makeSpeakButton(() => spokenValue));
     }
     if (meta.childNodes.length) article.appendChild(meta);
     return article;
@@ -4386,6 +4524,14 @@
 
   function bindEvents() {
     elements.mobileMenuButton.addEventListener("click", (event) => openSidebar(event.currentTarget));
+    if (elements.micButton) {
+      if (!micSupported()) {
+        elements.micButton.disabled = true;
+        elements.micButton.title = "当前浏览器不支持语音输入";
+      } else {
+        elements.micButton.addEventListener("click", toggleMicRecording);
+      }
+    }
     elements.sidebarClose.addEventListener("click", closeSidebar);
     elements.sidebarScrim.addEventListener("click", closeSidebar);
     elements.currentConversation.addEventListener("click", () => {

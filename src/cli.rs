@@ -6881,9 +6881,11 @@ async fn run_voice_ui(
             if !started {
                 println!("{}", t("space pressed", "已按空格"));
             }
-            // 用语音回应一声，告诉用户已唤醒（Miyu 说"在呢"，老周说"我在"）。
+            // 用语音回应一声，告诉用户已唤醒（Miyu/Dito 说"在呢"，老周说"我在"）。
             if voice_config.tts_backend != "none" {
-                let ack = if voice_config.wake_word.to_lowercase().contains("miyu") {
+                let ack = if voice_config.wake_word.to_lowercase().contains("miyu")
+                    || voice_config.wake_word.to_lowercase().contains("蒂特")
+                {
                     t("Here", "在呢")
                 } else {
                     t("I'm here", "我在")
@@ -7076,7 +7078,9 @@ fn speak_voice_blocking(
         let mut on_tick = |n: u64| {
             let _ = tick_tx.send(n);
         };
-        let _ = crate::voice::tts::speak_with_tick(&cfg, &text, &mut on_tick);
+        if let Err(err) = crate::voice::tts::speak_with_tick(&cfg, &text, &mut on_tick) {
+            eprintln!("[tts] 语音合成失败: {err:#}");
+        }
     });
     // 立即切到说话动画，并在整个合成+播放期间持续刷新；tick 只是结束信号。
     let mut phase = 0f64;

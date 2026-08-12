@@ -158,8 +158,13 @@
 
         <footer class="composer-dock" id="composerDock">
           <div class="question-dock" id="questionDock" aria-label="待回答问题" aria-live="polite" hidden></div>
-          <form class="composer" id="composerForm">
-            <textarea id="composerInput" rows="3" placeholder="给 Laozhou 发消息" aria-label="消息" disabled></textarea>
+           <form class="composer" id="composerForm">
+             <div class="composer-input-row">
+               <button class="mic-button" id="micButton" type="button" title="语音输入" aria-label="语音输入" disabled>
+                 <span class="icon-slot" data-icon="mic" aria-hidden="true"><span class="icon-fallback">🎙</span></span>
+               </button>
+               <textarea id="composerInput" rows="3" placeholder="给 Laozhou 发消息" aria-label="消息" disabled></textarea>
+             </div>
             <div class="queue-tray" id="queueTray" aria-label="排队中的消息" hidden></div>
             <div class="composer-footer">
               <div class="composer-controls">

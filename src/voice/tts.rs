@@ -77,14 +77,15 @@ fn piper(
     text: &str,
     on_tick: &mut dyn FnMut(u64),
 ) -> Result<()> {
-    let bin = if config.tts_command.trim().is_empty() {
-        "piper"
+    let bin = expand_tilde(config.tts_command.trim());
+    let bin = if bin.is_empty() {
+        "piper".to_string()
     } else {
-        config.tts_command.trim()
+        bin
     };
     let wav = output_audio_path("wav");
-    let model = config.tts_voice.trim();
-    let mut command = Command::new(bin);
+    let model = expand_tilde(config.tts_voice.trim());
+    let mut command = Command::new(bin.clone());
     if !model.is_empty() {
         command.arg("-m").arg(model);
     }
@@ -130,10 +131,16 @@ fn custom_command(config: &VoicePluginConfig, text: &str) -> Result<()> {
         );
     }
     let out = output_audio_path("wav");
+    let text_path = output_audio_path("txt");
+    std::fs::write(&text_path, text).with_context(|| "writing tts text file")?;
     let expanded = command_line
         .replace("{text}", &quote_shell(text))
+        .replace("{text_file}", &text_path.display().to_string())
         .replace("{file}", &out.display().to_string());
-    let parts = shell_words(&expanded);
+    let parts: Vec<String> = shell_words(&expanded)
+        .into_iter()
+        .map(|w| expand_tilde(&w))
+        .collect();
     let (program, args) = parts
         .split_first()
         .context("empty tts_command")?;
@@ -156,6 +163,16 @@ fn custom_command(config: &VoicePluginConfig, text: &str) -> Result<()> {
     }
     // Custom commands may play audio themselves.
     Ok(())
+}
+
+/// Expand a leading `~` in a path to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+            return home.join(rest).display().to_string();
+        }
+    }
+    path.to_string()
 }
 
 fn quote_shell(text: &str) -> String {
